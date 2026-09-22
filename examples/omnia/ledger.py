@@ -5,9 +5,14 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import math
-from typing import Any
+import sqlite3
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
 
 SCHEMA = "omnia.decision.v1"
 
@@ -127,3 +132,71 @@ def validate_answers(raw: dict, questions: dict) -> dict:
                 raise ValueError("answer confidence is inconsistent with distribution")
         result[key] = normalized
     return result
+
+
+class DecisionLedger:
+    """Serialize local decisions, cache successful records and retain failure types.
+
+    The SQLite transaction covers inference. This deliberately permits one active
+    decision per ledger, including across processes; busy callers fail after the
+    configured SQLite timeout. Use separate ledgers for independent workers.
+    """
+
+    def __init__(self, path: str | Path, *, busy_timeout: float = 30):
+        if not math.isfinite(busy_timeout) or not 0 < busy_timeout <= 300:
+            raise ValueError("invalid SQLite timeout")
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(path, timeout=busy_timeout)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("CREATE TABLE IF NOT EXISTS decisions (key TEXT PRIMARY KEY, record TEXT NOT NULL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS failures (key TEXT NOT NULL, kind TEXT NOT NULL, occurred_at TEXT NOT NULL)")
+        self.db.commit()
+
+    def close(self) -> None:
+        self.db.close()
+
+    def decide(self, request: dict, predict: Callable, *, manifest: dict,
+               min_probability: float = 0.8, max_bytes: int = 65_536) -> dict:
+        validate_request(request, max_bytes)
+        request = copy.deepcopy(request)
+        manifest = copy.deepcopy(manifest)
+        floor = probability(min_probability)
+        if not isinstance(manifest, dict) or not manifest:
+            raise ValueError("an engine manifest is required")
+        # A sorted JSON object alone would hide changes to option/question order.
+        order = [(key, list(q["criteria"]) if isinstance(q.get("criteria"), dict) else None)
+                 for key, q in request["questions"].items()]
+        identity = {"schema": SCHEMA, "request": request, "order": order,
+                    "state_serialization": json.dumps(request["state"], ensure_ascii=False, allow_nan=False),
+                    "engine": manifest, "min_probability": floor}
+        key = digest(identity)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute("SELECT record FROM decisions WHERE key=?", (key,)).fetchone()
+            if row:
+                self.db.commit()
+                return {**json.loads(row[0]), "cache_hit": True}
+            started = time.perf_counter()
+            response = predict(copy.deepcopy(request["state"]), copy.deepcopy(request["questions"]))
+            answers = validate_answers(response, request["questions"])
+            review = [name for name, answer in answers.items() if answer["answer_probability"] < floor]
+            record = {
+                "schema": SCHEMA, "decision_id": key, "source_id": request["id"],
+                "input_sha256": digest(request["state"]),
+                "questions_sha256": digest({"questions": request["questions"], "order": order}),
+                "evidence": request["evidence"], "engine": manifest,
+                "policy": {"min_answer_probability": floor},
+                "status": "review" if review else "accepted", "review_questions": review,
+                "answers": answers, "processed_at": datetime.now(timezone.utc).isoformat(),
+                "inference_ms": round((time.perf_counter() - started) * 1000, 3),
+            }
+            self.db.execute("INSERT INTO decisions VALUES (?,?)", (key, canonical(record)))
+            self.db.commit()
+            return {**record, "cache_hit": False}
+        except Exception as error:
+            self.db.rollback()
+            self.db.execute("INSERT INTO failures VALUES (?,?,?)",
+                            (key, type(error).__name__, datetime.now(timezone.utc).isoformat()))
+            self.db.commit()
+            raise DecisionError("decision failed; inspect the failure type in the private ledger") from None
