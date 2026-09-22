@@ -80,3 +80,50 @@ def validate_request(request: dict, max_bytes: int = 65_536) -> None:
                     text(description, 2000)
         else:
             raise ValueError("unsupported question type")
+
+
+def validate_answers(raw: dict, questions: dict) -> dict:
+    answers = raw.get("answers") if isinstance(raw, dict) else None
+    if not isinstance(answers, dict) or set(answers) != set(questions):
+        raise ValueError("answer identifiers do not match the questions")
+    result = {}
+    for key, question in questions.items():
+        answer, kind = answers[key], question["type"]
+        if not isinstance(answer, dict) or answer.get("type") != kind:
+            raise ValueError("answer type mismatch")
+        if kind == "noul":
+            yes = probability(answer.get("noul"))
+            normalized = {"type": kind, "noul": yes, "answer_probability": max(yes, 1 - yes)}
+        else:
+            criteria = question["criteria"]
+            labels = list(criteria) if kind == "choice" else [str(i) for i in range(len(criteria))]
+            distribution = answer.get("probabilities")
+            if not isinstance(distribution, dict) or set(distribution) != set(labels):
+                raise ValueError("answer distribution does not match criteria")
+            distribution = {label: probability(distribution[label]) for label in labels}
+            # Upstream rounds probabilities to four decimal places.
+            if abs(sum(distribution.values()) - 1) > len(labels) * 0.000051:
+                raise ValueError("answer distribution must sum to one")
+            maximum = max(distribution.values())
+            normalized = {"type": kind, "probabilities": distribution, "answer_probability": maximum}
+            if kind == "choice":
+                chosen = answer.get("choice")
+                if chosen not in labels or abs(distribution[chosen] - maximum) > 0.00011:
+                    raise ValueError("choice is inconsistent with distribution")
+                normalized["choice"] = chosen
+            else:
+                score = answer.get("score")
+                if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+                    raise ValueError("score must be finite")
+                expected = sum(i * distribution[str(i)] for i in range(len(labels)))
+                if not 0 <= score <= len(labels) - 1 or abs(score - expected) > len(labels) ** 2 * 0.000051:
+                    raise ValueError("score is inconsistent with distribution")
+                normalized["score"] = score
+        if "confidence" in answer:
+            normalized["model_confidence"] = probability(answer["confidence"])
+        if "answer_confidence" in answer:
+            reported = probability(answer["answer_confidence"])
+            if abs(reported - normalized["answer_probability"]) > 0.00011:
+                raise ValueError("answer confidence is inconsistent with distribution")
+        result[key] = normalized
+    return result
