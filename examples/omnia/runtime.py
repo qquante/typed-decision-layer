@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
-from dataclasses import dataclass
+import importlib.metadata
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from .ledger import probability
 
@@ -50,3 +53,83 @@ class Settings:
             min_probability=float(os.environ.get("OMNIA_LAYA_MIN_PROBABILITY", "0.8")),
             database=os.environ.get("OMNIA_LAYA_DATABASE", "var/omnia/decisions.sqlite3"),
         )
+
+
+def check_token_budget(tokenizer, state, questions, *, max_len, head_max_len):
+    """Reject any state, instruction or option that upstream would truncate."""
+    from laya.common import encode_text, render_options, serialize_state
+
+    mask = tokenizer.mask_token
+
+    def size(value):
+        return len(encode_text(tokenizer, value.replace(mask, " "), add_special_tokens=False)["input_ids"])
+
+    state_size = size(serialize_state(state))
+    for question in questions.values():
+        internal = {"t": question["type"], "ins": question["instructions"], "crit": question.get("criteria")}
+        options = [size(" " + option) for option in render_options(internal)]
+        if any(length > 48 for length in options):
+            raise ValueError("a criterion exceeds the checkpoint option budget")
+        option_size = sum(length + 1 for length in options)
+        instruction_size = size(f"{question['type']} question: {question['instructions']}")
+        if head_max_len - option_size < 16 or instruction_size > head_max_len - option_size:
+            raise ValueError("question exceeds the checkpoint head budget")
+        if 4 + instruction_size + option_size + state_size > max_len:
+            raise ValueError("state exceeds the complete-input context budget")
+
+
+def check_temperatures(agent, questions):
+    """Refuse questions whose active checkpoint temperature was corrected on load."""
+    from laya.common import QTYPES, temp_bucket
+    for question in questions.values():
+        kind = QTYPES[question["type"]]
+        count = 2 if question["type"] == "noul" else len(question["criteria"])
+        bucket = temp_bucket(kind, count)
+        raw = agent.temperature_by_options_raw.get(bucket, agent.temperature_raw[kind])
+        applied = agent.temperature_by_options.get(bucket, agent.temperature[kind])
+        if float(raw) != applied:
+            raise ValueError("the active calibration bucket requires review")
+
+
+class LocalLaya:
+    """Lazy local inference; importing this module never loads model weights."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.router = None
+
+    def manifest(self):
+        import laya
+        root = Path(laya.__file__).resolve().parent
+        fingerprint = hashlib.sha256()
+        for path in sorted(root.rglob("*.py")):
+            fingerprint.update(path.relative_to(root).as_posix().encode())
+            fingerprint.update(path.read_bytes())
+        integration = hashlib.sha256()
+        for name in ("ledger.py", "runtime.py"):
+            integration.update(Path(__file__).with_name(name).read_bytes())
+        config = asdict(self.settings)
+        for key in ("database", "max_bytes", "min_probability"):
+            config.pop(key)
+        return {"backend": "laya.local", "laya_version": laya.__version__,
+                "runtime_sha256": fingerprint.hexdigest(), "integration_sha256": integration.hexdigest(),
+                "configuration": config,
+                "dependencies": {name: importlib.metadata.version(name) for name in ("torch", "transformers", "numpy")},
+                "precision": {name: os.environ.get(name, "") for name in
+                              ("LAYA_CPU_AMP", "LAYA_CUDA_AMP", "LAYA_MPS_AMP_MIN_ROWS")}}
+
+    def __call__(self, state, questions):
+        if self.router is None:
+            import torch
+            from laya import Router
+            torch.set_num_threads(self.settings.threads)
+            self.router = Router(device=self.settings.device, revision=self.settings.revision,
+                                 default=self.settings.model, auto_task_detection=False, max_loaded=1)
+        agent = self.router.load(self.settings.model)
+        if agent.revision != self.settings.revision:
+            raise ValueError("loaded checkpoint revision differs from the requested revision")
+        check_temperatures(agent, questions)
+        check_token_budget(agent.tok, state, questions, max_len=self.settings.max_len,
+                           head_max_len=self.settings.head_max_len)
+        return self.router.predict(state, questions, model=self.settings.model,
+                                   max_len=self.settings.max_len, head_max_len=self.settings.head_max_len)
