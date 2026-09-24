@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Evaluate labeled choice decisions using probabilities, calibration and coverage."""
 
+import argparse
+import json
 import math
 
 from .ledger import probability
@@ -44,3 +46,17 @@ def choice_metrics(rows, *, threshold=.8, bins=10):
             "negative_log_likelihood": nll / count, "ece": ece, "ece_bins": bins,
             "threshold": threshold, "accepted": accepted, "coverage": accepted / count,
             "selective_error_rate": accepted_errors / accepted if accepted else None}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate reviewed OMNIA choice decisions")
+    parser.add_argument("--input", required=True, help="JSONL with id, expected and probabilities")
+    parser.add_argument("--threshold", type=float, default=.8)
+    args = parser.parse_args()
+    with open(args.input, encoding="utf-8-sig") as source:
+        rows = (json.loads(line) for line in source if line.strip())
+        print(json.dumps(choice_metrics(rows, threshold=args.threshold), allow_nan=False))
+
+
+if __name__ == "__main__":
+    main()
