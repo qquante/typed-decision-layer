@@ -129,7 +129,10 @@ def _field(path: str, name: str, prop: Dict[str, Any]) -> _Field:
 
     jtype = prop.get("type")
     if isinstance(jtype, list):                # nullable: ["string", "null"]
-        jtype = next((t for t in jtype if t != "null"), None)
+        non_null_types = [t for t in jtype if t != "null"]
+        if len(non_null_types) > 1:
+            raise SchemaError("%s: 'type' has multiple non-null types; unions are not supported" % path)
+        jtype = non_null_types[0] if non_null_types else None
     if jtype == "boolean":
         return _noul_field(path, name, description)
     if jtype == "string":

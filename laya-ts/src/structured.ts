@@ -166,7 +166,13 @@ function fieldFor(path: string, name: string, prop: unknown): PlannedField {
     return enumField(path, name, p.enum, description);
   }
   let jtype = p.type;
-  if (Array.isArray(jtype)) jtype = jtype.find((t) => t !== "null"); // nullable: ["string", "null"]
+  if (Array.isArray(jtype)) {
+    const nonNullTypes = jtype.filter((t) => t !== "null"); // nullable: ["string", "null"]
+    if (nonNullTypes.length > 1) {
+      throw new SchemaError(`${path}: 'type' has multiple non-null types; unions are not supported`);
+    }
+    jtype = nonNullTypes[0];
+  }
   if (jtype === "boolean") return noulField(name, description);
   if (jtype === "string") {
     throw new SchemaError(`${path}: a free string cannot be a fixed option set; use 'enum' or a boolean`);
