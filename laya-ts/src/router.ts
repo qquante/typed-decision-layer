@@ -362,8 +362,12 @@ export class Router extends HookRegistry {
       };
     }
 
-    if (lang !== null && lang !== undefined) {
-      const key: ModelName = englishFromCode(lang) ? "english" : "multilingual";
+    // An explicit `lang` is decisive only when the code names a language. Blank or whitespace
+    // resolves to no usable hint, so it falls through to langGuess/detection exactly as an
+    // abstaining hint does (Python parity); real English/non-English codes still route now.
+    const resolvedLang = englishFromCode(lang);
+    if (resolvedLang !== null) {
+      const key: ModelName = resolvedLang ? "english" : "multilingual";
       return {
         model: key,
         repo: repoStr(this.models[key]),
