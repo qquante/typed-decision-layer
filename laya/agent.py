@@ -423,7 +423,7 @@ class Agent(HookRegistry):
         fell_back_from = fell_back_why = None
         try:
             self.model.to(self.device).eval()
-        except (RuntimeError, torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
             if self.device.type != "cpu":
                 # Record what actually went wrong: the reason matters more than the symptom,
                 # and it is the only place the underlying exception is ever surfaced.
@@ -633,8 +633,7 @@ class Agent(HookRegistry):
 
         try:
             return run()
-        except (RuntimeError, torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
-            # torch.OutOfMemoryError (not the CUDA subclass) is what XPU OOMs raise
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
             low = str(e).lower()
             if self.device.type != "cpu" and ("memory" in low or "cuda" in low):
                 print("Warning: GPU memory exceeded during inference. Falling back to CPU...")
