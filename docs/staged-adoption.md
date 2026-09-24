@@ -38,14 +38,19 @@ class ShadowLog:
 router = Router(hooks=[ShadowLog()])
 
 def handle(request):
-    laya_result = router.predict(request.state, request.questions)
+    try:
+        laya_result = router.predict(request.state, request.questions)
+    except Exception as exc:
+        record_laya_failure(request, exc)
+        return run_incumbent_action(request)
     # The shadow result is recorded by the hook; do not execute it here.
     return run_incumbent_action(request)
 ```
 
-Keep sensitive fields redacted according to the application's policy. If a Laya call fails before
-or during inference, record the application-visible failure and continue or fall back according to
-the incumbent policy; a shadow logger must not turn logging into a new user-facing action.
+Keep sensitive fields redacted according to the application's policy. Catch and log exceptions
+around `router.predict(...)` at the application boundary. The prediction hook covers the prediction
+lifecycle, but failures before that lifecycle require application-level capture; do not assume
+`on_predict_end` saw them. A shadow logger must not turn logging into a new user-facing action.
 
 See [Prediction hooks](hooks/index.md), the [hook lifecycle](hooks/lifecycle.md), and
 [Tracing](hooks/tracing.md) for the event order and `run_id` correlation.
