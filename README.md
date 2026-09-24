@@ -771,9 +771,9 @@ reviewable diff instead of a hand-check. It is pure Python plus numpy, imports n
 needs no weights until you point it at a checkpoint.
 
 ```bash
-laya-eval validate research/evals/fixture.jsonl
-laya-eval run data.jsonl --model english --min-accuracy 0.8 --max-ece 0.05 --slice language
-laya-eval run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0.02 --json report.json
+laya-evals validate research/evals/fixture.jsonl
+laya-evals run data.jsonl --model english --min-accuracy 0.8 --max-ece 0.05 --slice language
+laya-evals run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0.02 --json report.json
 ```
 
 `run` reports overall and per-slice metrics (`choice_accuracy`, `noul_accuracy`, `score_mae`,

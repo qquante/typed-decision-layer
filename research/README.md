@@ -8,7 +8,7 @@ the numbers quoted in the main README — nothing here is imported by the `laya`
 - [`eval/`](eval/README.md): the independent per-language MASSIVE harness (`laya_eval.py`), the per-case
   report behind the published numbers, plus the metamorphic and presentation checks.
 - [`evals/`](evals/README.md): the labelled datasets, thresholds and regression gate consumed by
-  `laya.evals` / `laya-eval` and the scheduled `evals` workflow.
+  `laya.evals` / `laya-evals` and the scheduled `evals` workflow.
 
 ## Community diagnostics
 

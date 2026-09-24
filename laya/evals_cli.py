@@ -1,10 +1,10 @@
-"""`laya-eval`: run a labelled evaluation, validate a dataset, or compare a report.
+"""`laya-evals`: run a labelled evaluation, validate a dataset, or compare a report.
 
 Exit codes: 0 on success, 1 when a threshold or a baseline tolerance fails, 2 on a usage error.
 
-    laya-eval validate research/evals/fixture.jsonl
-    laya-eval run research/evals/fixture.jsonl --model english --min-accuracy 0.8 --max-ece 0.1
-    laya-eval run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0.02 --json out.json
+    laya-evals validate research/evals/fixture.jsonl
+    laya-evals run research/evals/fixture.jsonl --model english --min-accuracy 0.8 --max-ece 0.1
+    laya-evals run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0.02 --json out.json
 
 `laya eval ...` dispatches here from the main CLI, so both spellings work.
 """
@@ -48,7 +48,7 @@ def _parse_pairs(pairs: Optional[Sequence[str]]) -> Dict[str, float]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="laya-eval",
+    parser = argparse.ArgumentParser(prog="laya-evals",
                                      description="Evaluate a Laya checkpoint on a labelled dataset.")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -186,7 +186,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _cmd_run(args)
         return _cmd_compare(args)
     except EvalError as exc:
-        print("laya-eval: %s" % exc, file=sys.stderr)
+        print("laya-evals: %s" % exc, file=sys.stderr)
         return 1
 
 

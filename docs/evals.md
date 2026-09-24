@@ -11,15 +11,15 @@ takes its normal load time.
 
 ```bash
 # check the format without a model
-laya-eval validate research/evals/fixture.jsonl
+laya-evals validate research/evals/fixture.jsonl
 
 # score a labelled set on one checkpoint, with thresholds and a baseline
-laya-eval run data.jsonl --model english --device cpu \
+laya-evals run data.jsonl --model english --device cpu \
     --min-accuracy 0.8 --max-ece 0.05 --slice language \
     --json report.json --markdown report.md
 
 # compare a saved report to a baseline
-laya-eval compare report.json --baseline baseline.json --tolerance choice_accuracy=0.02
+laya-evals compare report.json --baseline baseline.json --tolerance choice_accuracy=0.02
 ```
 
 `laya eval ...` is the same thing through the main CLI, so `laya eval validate data.jsonl`
@@ -72,7 +72,7 @@ reading the aggregate.
 - Keep the dataset, a baseline report (`--json` output you have reviewed), and the tolerances
   together, committed, so a change is a reviewable diff. `--tolerance METRIC=VALUE` is the
   maximum absolute drift allowed for that metric.
-- `laya-eval run ... --baseline baseline.json --tolerance ...` exits non-zero on drift, so it
+- `laya-evals run ... --baseline baseline.json --tolerance ...` exits non-zero on drift, so it
   drops into CI unchanged. `laya.evals.EvalReport.compare` and `assert_regression` expose the
   same logic for tests.
 

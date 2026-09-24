@@ -1,6 +1,6 @@
 # research/evals
 
-Datasets, baselines and thresholds for the `laya-eval` harness and its CI gate.
+Datasets, baselines and thresholds for the `laya-evals` harness and its CI gate.
 
 - `fixture.jsonl`: a tiny hand-written set that exercises `choice`, `score` and `noul`
   across a few tags. It exists to prove the format and to run the harness in tests. It is
@@ -27,9 +27,9 @@ One JSON object per line (JSONL). Blank lines and lines starting with `#` are ig
 ## Use
 
 ```bash
-laya-eval validate research/evals/fixture.jsonl
-laya-eval run data.jsonl --model english --min-accuracy 0.8 --max-ece 0.05 --slice language
-laya-eval run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0.02 --json out.json
+laya-evals validate research/evals/fixture.jsonl
+laya-evals run data.jsonl --model english --min-accuracy 0.8 --max-ece 0.05 --slice language
+laya-evals run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0.02 --json out.json
 ```
 
 `run` exits non-zero when a threshold or a baseline tolerance fails, so it drops into CI

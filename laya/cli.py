@@ -127,7 +127,7 @@ def interactive(args):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "eval":       # `laya eval ...` mirrors the `laya-eval` script
+    if argv and argv[0] == "eval":       # `laya eval ...` mirrors the `laya-evals` script
         from .evals_cli import main as eval_main
         return eval_main(argv[1:])
     args = build_parser().parse_args(argv)
