@@ -362,6 +362,8 @@ class Router(HookRegistry):
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
             except Exception:
                 pass
         self._dispatch_lifecycle("on_evict", freed)
