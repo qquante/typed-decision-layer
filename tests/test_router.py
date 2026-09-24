@@ -482,6 +482,26 @@ for text in ["turn off smart lamp in den", "im so sorry, am an hour late, stuck 
 check("latin_lang/spanish es stays evidence", guess_latin_language("que hora es en australia"), "es")
 check("latin_lang/french du stays evidence", guess_latin_language("baisse le volume du haut-parleur"), "fr")
 
+# ------------------------------------------------------------------ accented loanwords in English (#337)
+# The diacritic rate is measured over every character, so one `é` in a short English sentence
+# clears the 0.02 floor and used to veto the English resolution outright: plain English with a
+# loanword or foreign name (`café`, `résumé`, `José`, `Zürich`) went to the checkpoint the
+# README says collapses on English-heavy Latin text. English function words now outvote a
+# marginal rate; a rate well above the floor (several diacritics and no English evidence) still
+# vetoes.
+for text in ["Please send me the café menu today please",
+             "Could you email me your résumé before the meeting",
+             "Send the invoice to José before Friday",
+             "We visited Zürich last summer and loved it"]:
+    check("latin_lang/loanword english stays english " + text, guess_latin_language(text), "en")
+    check("route/loanword english stays english " + text, _r_lat.route(text).model, "english")
+# Genuinely non-English accented text keeps its multilingual routing: a German sentence with
+# umlauts and no English function word is not rescued.
+check("latin_lang/accented german stays non-english",
+      is_english("Grüße aus Köln, wir melden uns wegen der Rechnung"), False)
+check("route/accented german stays multilingual",
+      _r_lat.route("Grüße aus Köln, wir melden uns wegen der Rechnung").model, "multilingual")
+
 
 # --------------------------------------------------------------------- temperature clamp (#35)
 # A fitted temperature below 1 sharpens logits. The shipped `choice:11+` bucket is 0.1006, which

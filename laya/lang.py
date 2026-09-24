@@ -277,6 +277,13 @@ def script_profile(text: str) -> Dict[str, float]:
 # stopword list matches it.
 NON_EN_DIACRITIC_RATE = 0.02
 
+# One accented loanword or proper noun (`café`, `résumé`, `José`) must not alone pull otherwise
+# plain English off the English checkpoint: the rate is measured over every character, so a
+# single `é` in a short sentence clears the floor above. English function words keep their say
+# unless the rate is well above the floor, so genuinely non-English text still loses its
+# English reading.
+ENGLISH_RESCUE_DIACRITIC_RATE = 0.06
+
 # Non-Latin text is not for the English checkpoint even when Latin letters are the plurality: a
 # brand name or order code outvotes the CJK request around it letter for letter, though one CJK
 # character carries far more than a letter. A short message needs a large share to count; a long
@@ -363,7 +370,9 @@ def latin_profile(text: str) -> Dict[str, object]:
         # Needs two hits here too. One shared function word ("para" in Turkish text) named Spanish
         # on the strength of the diacritics alone, which is a guess dressed as a detection.
         lang = best_lg
-    elif en and not non_english:
+    elif en and (not non_english or diac_rate < ENGLISH_RESCUE_DIACRITIC_RATE):
+        # A marginal diacritic rate (one loanword) does not outvote English function words;
+        # only a rate well above the floor keeps its veto.
         lang = "en"
     return {"language": lang, "english_hits": en, "diacritic_rate": diac_rate,
             "looks_non_english": non_english}
