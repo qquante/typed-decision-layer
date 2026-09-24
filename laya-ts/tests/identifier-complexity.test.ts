@@ -96,7 +96,18 @@ describe("identifier stripping: complexity", () => {
   // apart, which CI jitter covers either way. The 20 000 and 50 000 character cases
   // above carry the guarantee -- they are 250x and 1500x apart.
 
-  // The absolute ceilings above are the stable regression guard. A relative timing
-  // ratio is too sensitive to Vitest worker contention on CI: unrelated tests can delay
-  // one small sample and make a linear implementation appear super-linear.
+  it("4x the input costs under 8x the time (linear ~4, quadratic ~16)", () => {
+    // One untimed call per size first, so JIT tiering is not charged to either side, then
+    // the best of five: a single descheduled run on a shared CI runner must not decide it.
+    const best = (n: number) => {
+      const s = "a".repeat(n);
+      latinProfile(s);
+      return Math.min(...[0, 1, 2, 3, 4].map(() => elapsed(() => latinProfile(s))));
+    };
+    const small = best(12_500);
+    const large = best(50_000);
+    // performance.now() granularity makes a sub-0.05 ms baseline meaningless; the
+    // absolute ceilings above already carry the guarantee in that case.
+    if (small > 0.05) expect(large / small).toBeLessThan(8);
+  });
 });
