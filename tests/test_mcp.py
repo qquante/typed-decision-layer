@@ -225,6 +225,33 @@ def test_shape():
                       "invalid_questions")
 
 
+def test_question_forwarding():
+    questions = {
+        "intent": {"type": "choice", "instructions": "Which intent?",
+                   "criteria": {"A": None, "B": {"desc": "billing"}}},
+        "urgency": {"type": "score", "instructions": "How urgent?",
+                    "criteria": ["low", {"desc": "blocking"}]},
+        "positive": {"type": "noul", "instructions": "Is this positive?",
+                     "criteria": {"false": None, "true": "yes"},
+                     "labels": {"false": "B", "true": "A"}},
+    }
+
+    class CapturingRouter(FakeRouter):
+        def predict(self, state, received, **kwargs):
+            self.predicted_questions = received
+            return super().predict(state, received, **kwargs)
+
+        def route(self, state, received):
+            self.routed_questions = received
+            return super().route(state, received)
+
+    router = CapturingRouter()
+    laya_predict(STATE, questions, router=router)
+    laya_route(STATE, questions, router=router)
+    ok("questions/predict_preserves_supported_values", router.predicted_questions == questions)
+    ok("questions/route_preserves_supported_values", router.routed_questions == questions)
+
+
 def test_real_device():
     # agent_device: the real device read from a loaded agent (no weights).
     ok("device/agent_str", agent_device(FakeAgent()) == "cpu")
@@ -344,6 +371,8 @@ def test_server_registration():
         # laya_status reports instead of deciding.
         if t.name in decision:
             ok("server/desc_%s_guardrail" % t.name, "do not use" in desc)
+        if t.name == "laya_predict":
+            ok("server/desc_noul_labels", "optional labels" in desc)
 
 
 test_device()
@@ -351,6 +380,7 @@ test_real_device()
 test_private_contract()
 test_schema()
 test_shape()
+test_question_forwarding()
 test_timeout_removed()
 test_models_from_env()
 test_server_registration()
