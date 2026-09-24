@@ -148,4 +148,4 @@ The three parts of the archive are the same three parts `research/eval/laya_eval
 - These fixtures are a regression diagnostic. Do not tune on them and then report them as held-out.
 - Chinese post-training remains an open research question; 中文 short-command routing is not solved by this file, it is measured by it.
 
-Contributed by GaotianJin, with AI assistance for the harness, the audit and the tests. The case text is the contributor's own. No user data, recordings, credentials or model weights are included; the checkpoint stays under its own license. This directory is MIT-licensed like the rest of the repository.
+Contributed by GaotianJin, with AI assistance for the harness, the audit and the tests. The case text is the contributor's own. No user data, recordings, credentials or model weights are included; the checkpoint stays under its own license. This directory is Apache-2.0-licensed like the rest of the repository.
