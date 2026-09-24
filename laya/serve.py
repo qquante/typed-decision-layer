@@ -26,6 +26,8 @@ env var                 meaning                                        default
 ``LAYA_AUTO_TASK``      auto-route to the typed-decisions checkpoint   0
 ``LAYA_API_KEY``        if set, require ``Authorization: Bearer <it>``  (none)
 ``LAYA_LOG_LEVEL``      uvicorn log level                              info
+``LAYA_MAX_CONCURRENT`` cap on requests past auth at once; excess      16
+                        gets 503 (see below)
 ======================  ============================================  =========
 
 Imports of heavy dependencies (fastapi, uvicorn, torch via Router) are all
@@ -57,6 +59,10 @@ _KNOWN_MODELS = {"english", "multilingual", "typed-decisions"}
 MAX_QUESTIONS = 64
 MAX_STATE_CHARS = 50000
 MAX_BODY_BYTES = 2 * 1024 * 1024
+# Cap on requests past auth at once. Each one can buffer up to MAX_BODY_BYTES
+# before inference, so without a bound many concurrent near-cap requests OOM
+# the worker even though every request is individually valid (#330).
+DEFAULT_MAX_CONCURRENT = 16
 # Public Hugging Face ids, accepted so a client can name a checkpoint. The root bundle is
 # deliberately absent: the documented ``convaiinnovations/laya`` value means
 # "let the Router choose", rather than pinning the English checkpoint.
@@ -90,6 +96,18 @@ def _resolve_model(model: Optional[str]) -> Optional[str]:
     except Exception:
         return None
     return key if key in _KNOWN_MODELS else None
+
+
+def _resolve_max_concurrent() -> int:
+    """Bound on requests past auth at once, from LAYA_MAX_CONCURRENT."""
+    raw = os.environ.get("LAYA_MAX_CONCURRENT")
+    if not raw:
+        return DEFAULT_MAX_CONCURRENT
+    try:
+        n = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_CONCURRENT
+    return n if n > 0 else DEFAULT_MAX_CONCURRENT
 
 
 def _resolve_port() -> int:
@@ -205,6 +223,13 @@ def create_app(router: Optional[Any] = None):
     # running when it is first awaited, and `create_app` may be called before that loop
     # exists (module scope, TestClient startup, a preload script).
     gate: Optional[asyncio.Lock] = None
+    # Admission bound, same late-creation reason as the gate. Checked before any
+    # body byte is read and held through inference, so the bodies buffered at
+    # once stay bounded no matter how many clients connect (#330). The inference
+    # gate is still joined only after the body is complete, so a slow client
+    # holds an admission slot but never an inference slot.
+    max_concurrent = _resolve_max_concurrent()
+    admission: Optional[asyncio.Semaphore] = None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -247,8 +272,22 @@ def create_app(router: Optional[Any] = None):
 
     @app.post("/v1/systemone")
     async def systemone(request: Request, authorization: Optional[str] = Header(default=None)):
-        nonlocal gate
+        nonlocal gate, admission
         _check_auth(authorization)
+        if admission is None:
+            admission = asyncio.Semaphore(max_concurrent)
+        if admission.locked():
+            # Non-blocking: excess load is refused rather than queued, so the
+            # buffered bodies stay within the bound above.
+            raise HTTPException(status_code=503, detail="server busy, try again later")
+        await admission.acquire()
+        try:
+            return await _systemone_inner(request)
+        finally:
+            admission.release()
+
+    async def _systemone_inner(request: Request):
+        nonlocal gate
         # A declared length over the cap is rejected before anything is read; the
         # streaming cap below is what actually enforces it, for bodies that declare
         # no length or understate it.
