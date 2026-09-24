@@ -101,14 +101,15 @@ const STOP: Record<string, Set<string>> = {
 };
 
 const NON_EN_DIACRITICS = new Set(
-  ("àâäãáåçéèêëíìîïñóòôöõøúùûüýÿßæœ" +
-    "ăâîșțşţ" +
-    "ąćęłńśźż" +
-    "čďěňřšťůž" +
-    "őű" +
-    "ğı" +
-    "āēģīķļņūž" +
-    "đ").split(""),
+  ("àâäãáåçéèêëíìîïñóòôöõøúùûüýÿßæœ" +   // Western European
+    "ăâîșțşţ" +                            // Romanian
+    "ąćęłńśźż" +                           // Polish
+    "čďěňřšťůž" +                          // Czech / Slovak
+    "őű" +                                 // Hungarian
+    "ğı" +                                 // Turkish (text is lowercased before matching)
+    "āēģīķļņūž" +                          // Baltic
+    "đ" +                                  // Serbo-Croatian / Vietnamese
+    "ə").split(""),                        // Azerbaijani
 );
 
 export const NON_EN_DIACRITIC_RATE = 0.02;
