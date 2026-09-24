@@ -173,7 +173,9 @@ def _amp_context(device, dtype, enabled: bool):
 
     Entering `torch.autocast` on a device torch has no autocast backend for raises even with
     `enabled=False` ("User specified an unsupported autocast device_type mps"), which broke
-    every `predict()` on Apple Silicon on some torch builds. Only enter it when we use it.
+    every `predict()` on Apple Silicon on some torch builds. Only enter it when we use it;
+    the `enabled` flag is set per device by the load-time policy, which skips XPU on builds
+    without an XPU autocast backend.
     """
     if not enabled:
         return nullcontext()
@@ -383,12 +385,15 @@ class Agent(HookRegistry):
                 "using %s. Treat confidence from the affected entries as uncalibrated."
                 % (TEMP_MIN, TEMP_MAX, ", ".join(rejected)),
                 RuntimeWarning, stacklevel=2)
-        # Autocast policy. CUDA and MPS both support fp16/bf16 autocast and the shipped
+        # Autocast policy. CUDA, MPS and XPU all support fp16/bf16 autocast and the shipped
         # checkpoints are trained in reduced precision. CPU bf16 is only a win on hardware with
         # native BF16, so it stays opt-in via LAYA_CPU_AMP=bf16. MPS fp16 is slower than fp32 on
         # a single small row (autocast overhead dominates) and only wins once the batch has
         # several rows, so it is gated per call by `mps_amp_min_rows` (default 5, override with
-        # LAYA_MPS_AMP_MIN_ROWS) rather than enabled unconditionally.
+        # LAYA_MPS_AMP_MIN_ROWS) rather than enabled unconditionally. XPU autocast supports
+        # bf16/fp16 only, and entering it on a torch build without an XPU autocast backend
+        # raises on every predict (the failure #273 fixed for MPS), so it is only enabled on
+        # builds that have one.
         self.dtype = torch.float32
         self.amp_enabled = False
         self.mps_amp_min_rows = _mps_amp_min_rows()
@@ -401,6 +406,12 @@ class Agent(HookRegistry):
         elif self.device.type == "mps":
             self.amp_enabled = True
             self.dtype = torch.float16
+        elif self.device.type == "xpu":
+            # Device selection above already requires torch.xpu for an xpu device; the probe
+            # also guards hand-built agents on builds without an XPU autocast backend.
+            if getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
+                self.amp_enabled = True
+                self.dtype = torch.bfloat16
         elif self.device.type == "cpu":
             if os.environ.get("LAYA_CPU_AMP", "").lower() in ("bf16", "bfloat16"):
                 self.amp_enabled = True
@@ -412,7 +423,7 @@ class Agent(HookRegistry):
         fell_back_from = fell_back_why = None
         try:
             self.model.to(self.device).eval()
-        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+        except (RuntimeError, torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
             if self.device.type != "cpu":
                 # Record what actually went wrong: the reason matters more than the symptom,
                 # and it is the only place the underlying exception is ever surfaced.
@@ -622,7 +633,8 @@ class Agent(HookRegistry):
 
         try:
             return run()
-        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+        except (RuntimeError, torch.cuda.OutOfMemoryError, torch.OutOfMemoryError) as e:
+            # torch.OutOfMemoryError (not the CUDA subclass) is what XPU OOMs raise
             low = str(e).lower()
             if self.device.type != "cpu" and ("memory" in low or "cuda" in low):
                 print("Warning: GPU memory exceeded during inference. Falling back to CPU...")
@@ -887,6 +899,8 @@ class Agent(HookRegistry):
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
         except Exception:
             pass
         return False
