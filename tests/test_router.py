@@ -166,6 +166,59 @@ check("state_text/none", state_text(None), "")
 check("state_text/keys ignored",
       analyse({"subject": "नमस्ते", "body": "ग्राहक से दो बार शुल्क लिया गया"})["is_english"], False)
 
+# --------------------------------------------------------------------- dict-state language (#384)
+# The same German sentence must route the same way as a string and as a dict value.
+# A mapping that is not a builtin dict, a bytes value, and English sibling fields used to
+# hide that value: detection then reported language_undecided (or English) and the router
+# fell through to the English checkpoint.
+_DE = "Mein Konto wurde zweimal belastet"
+_r_de = Router()
+_de_str = _r_de.route(_DE, {})
+_de_dict = _r_de.route({"message": _DE}, {})
+check("route/dict german matches string", _de_dict.model, _de_str.model)
+check("route/dict german is multilingual", _de_dict.model, "multilingual")
+check("route/dict german names de", _de_dict["detection"]["language"], "de")
+check("route/dict german is not undecided", _de_dict["detection"]["language_undecided"], False)
+check("analyse/dict german matches string", analyse({"message": _DE})["language"], analyse(_DE)["language"])
+# English notes must not outvote the message, and a long note must not push it out of the window.
+_de_ticket = {
+    "ticket_id": "TCK-88213",
+    "channel": "web chat",
+    "agent_notes": "Please check the shipping status and refund the customer if the charge was duplicated.",
+    "message": _DE,
+}
+check("route/dict german beside english notes", _r_de.route(_de_ticket, {}).model, "multilingual")
+check("route/dict german beside english notes is not undecided",
+      _r_de.route(_de_ticket, {})["detection"]["language_undecided"], False)
+_de_long = {
+    "agent_notes": "Please check the shipping status and tell the customer about the refund. " * 80,
+    "message": _DE,
+}
+check("route/dict german after long english note", _r_de.route(_de_long, {}).model, "multilingual")
+check("route/dict german after long english note names de",
+      _r_de.route(_de_long, {})["detection"]["language"], "de")
+from collections import UserDict  # noqa: E402
+from types import MappingProxyType  # noqa: E402
+check("route/userdict german", _r_de.route(UserDict({"message": _DE}), {}).model, "multilingual")
+check("route/userdict german is not undecided",
+      _r_de.route(UserDict({"message": _DE}), {})["detection"]["language_undecided"], False)
+check("route/mappingproxy german",
+      _r_de.route(MappingProxyType({"message": _DE}), {}).model, "multilingual")
+check("route/bytes german value",
+      _r_de.route({"message": _DE.encode("utf-8")}, {}).model, "multilingual")
+# A name beside an English request is not a second message.
+check("route/dict cyrillic name stays english",
+      _r_de.route({"name": "Антон Павлович Чехов",
+                   "body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+check("route/dict jose stays english",
+      _r_de.route({"name": "José",
+                   "body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+check("route/dict english body stays english",
+      _r_de.route({"body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+
 
 # --------------------------------------------------------------------- workflow signatures
 check("profile/armenian", analyse("Հայերեն")["script_profile"], {"armenian": 1.0})
