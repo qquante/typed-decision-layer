@@ -541,6 +541,38 @@ batched (measured ~9–10×). On CPU, increasing batch size alone may not speed 
 length grouping can help by reducing the padded work in a mixed-length workload. See the
 [CPU measurements and reproduction commands](research/README.md#length-batching).
 
+### Long documents: `predict_long`
+
+`predict`/`system_one` truncate a state that exceeds `max_len` to a single window (the first, or
+for a conversation list the last), silently dropping the rest. `predict_long` scans the whole state
+in overlapping windows, scores them in shared forward passes (via `predict_batch`), and aggregates
+per question:
+
+```python
+result = agent.predict_long(state, questions)              # windows the state, one result back
+result = agent.predict_long(state, questions, window=256)  # smaller window isolates a localized span
+```
+
+- `noul` takes the strongest window (the statement holds if any window supports it).
+- `choice` / `score` take the most-confident window — averaging over a long, mostly-neutral
+  document lets the neutral majority out-vote the one window that saw the deciding span.
+- A state that already fits one window is passed straight to `system_one` (identical output).
+
+A smaller `window` isolates a short deciding span better (it becomes a larger fraction of its
+window); the default (`max_len - head_max_len`) favors context and throughput. Output shape matches
+`predict`, with `usage["windows"]` added.
+
+The returned probability is the deciding window's, **not a calibrated number for the whole
+document** — a `noul` max drifts up with the window count even with no signal, and `choice` can land
+on a confidently-neutral window when nothing is decisive. Each answer carries `answer["window"]`
+(the deciding window's `index`, `token_start`/`token_end`, and `count`) so you can check the span
+the answer actually came from:
+
+```python
+r = agent.predict_long(state, questions)
+r["answers"]["refund"]["window"]   # {'index': 13, 'token_start': 4680, 'token_end': 5432, 'count': 14}
+```
+
 ---
 
 ## GPU Fast Path (TileLang)

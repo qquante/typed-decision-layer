@@ -841,6 +841,108 @@ class Agent(HookRegistry):
                     raise
         return ctx.results
 
+    def predict_long(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
+                     window: Optional[int] = None, stride: Optional[int] = None,
+                     aggregate: str = "auto", batch_size: Optional[int] = None,
+                     lang: Optional[str] = None) -> Dict[str, Any]:
+        """Evaluate questions over a state longer than the context window, scanning it in
+        overlapping windows and aggregating per question.
+
+        `system_one`/`predict` truncate a state that exceeds `max_len` to a single window (the
+        first, or for a conversation list the last), silently dropping the rest. `predict_long`
+        tokenizes the state once, splits it into overlapping token windows, scores every window in
+        shared forward passes (via `predict_batch`), and combines the per-window answers:
+
+          * noul  -> P(true) is the max over windows (the statement holds if any window supports it)
+          * choice-> the answer from the single most-confident window, so a localized signal isn't
+                     out-voted by the many neutral windows a long document is mostly made of
+                     (averaging drowns it -- the neutral majority dominates)
+          * score -> the level from the most-confident window, likewise
+
+        The returned probability/confidence is the deciding window's, **not a calibrated number for
+        the whole document**: a `noul` max over many windows drifts up with the window count even
+        with no signal, and `choice` can land on a confidently-neutral window when nothing in the
+        document is decisive. Each answer therefore carries `answer["window"]` — the deciding
+        window's `index`, `token_start`/`token_end` into the tokenized state, and the window `count`
+        — so a caller can inspect the span the answer came from rather than trust the raw number.
+
+        A state that already fits one window is passed straight to `system_one` (identical output).
+
+        Args:
+            window: state tokens per window. Defaults to the per-question state budget
+                    (`max_len - head_max_len - 8`) -- the most a window can hold for every question.
+                    A smaller window isolates a localized signal better (a short deciding span is a
+                    larger fraction of its window, so that window classifies it clearly), at the
+                    cost of more windows; the large default favors context and throughput. `noul`
+                    is robust to this, `choice`/`score` benefit from a smaller window when the
+                    deciding span is a small part of a long, otherwise-neutral document.
+            stride: token step between windows. Defaults to `window // 2` (50% overlap), so a span
+                    near a boundary still lands whole inside some window.
+            aggregate: "auto" (the per-type rules above) is the only mode for now.
+            batch_size: cap on windows per forward pass, to bound memory on very long states.
+            lang: per-language temperature selection, as in `system_one`.
+
+        Returns a single result dict, the same shape as `system_one`, with `usage["windows"]` added.
+        """
+        if aggregate != "auto":
+            raise ValueError("predict_long: only aggregate='auto' is supported")
+        max_len = self.cfg.get("max_len", 512)
+        head_max_len = self.cfg.get("head_max_len", 192)
+        budget = window if (window and window > 0) else max(64, max_len - head_max_len - 8)
+
+        state_ids = self.tok(serialize_state(state).replace(self.tok.mask_token, " "),
+                             add_special_tokens=False)["input_ids"]
+        # Fits in one window: identical to a plain call, no windowing overhead.
+        if len(state_ids) <= budget:
+            return self.system_one(state, questions, lang=lang)
+
+        step = stride if (stride and stride > 0) else max(1, budget // 2)
+        windows, starts = [], []
+        i, n = 0, len(state_ids)
+        while i < n:
+            # Decode each token window back to text so predict_batch re-tokenizes it as a normal
+            # state. For BPE tokenizers the re-tokenized boundaries can shift by a token or two vs
+            # this split; harmless for aggregation since the 50% default overlap absorbs it.
+            windows.append(self.tok.decode(state_ids[i:i + budget]))
+            starts.append(i)
+            if i + budget >= n:
+                break
+            i += step
+
+        results = self.predict_batch(windows, questions, batch_size=batch_size, lang=lang)
+
+        ids = list(questions.keys())
+        internal = {qid: self._to_internal(questions[qid]) for qid in ids}
+        answers = {}
+        for qid in ids:
+            per = [r["answers"][qid] for r in results]
+            if internal[qid]["t"] == "noul":
+                # Evidence anywhere: the strongest window decides. Its own P(true) and confidence
+                # (and act) are carried through, so the fields stay mutually consistent.
+                best = max(range(len(per)), key=lambda j: float(per[j]["noul"]))
+            else:
+                # choice / score: the most-confident window wins. Averaging over a long, mostly
+                # neutral document lets the neutral majority out-vote the one window that saw the
+                # deciding span; the single most-confident window preserves a localized signal.
+                best = max(range(len(per)), key=lambda j: float(per[j]["answer_confidence"]))
+            ans = per[best]
+            # Name the window that decided, so a caller can check the deciding span itself. The
+            # probability here is that window's, NOT a document-level calibrated number.
+            ans["window"] = {"index": best, "token_start": starts[best],
+                             "token_end": min(starts[best] + budget, len(state_ids)),
+                             "count": len(windows)}
+            answers[qid] = ans
+        # Aggregate usage generically so fields predict_batch may grow later (e.g. the fallback
+        # counters from #351) are propagated, not silently dropped: sum numeric fields across
+        # windows, carry any non-numeric field through, then record the window count.
+        usage: Dict[str, Any] = {}
+        for r in results:
+            for key, val in r["usage"].items():
+                usage[key] = (usage.get(key, 0) + val) if isinstance(val, (int, float)) else val
+        usage["output_tokens"] = 0
+        usage["windows"] = len(windows)
+        return {"model": "laya-rl-agent", "answers": answers, "usage": usage}
+
     @torch.no_grad()
     def system_one(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]], lang: Optional[str] = None,
                    hooks=None, on_predict_start=None, on_predict_end=None,
