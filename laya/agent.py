@@ -499,6 +499,17 @@ class Agent(HookRegistry):
                                  "label -> description, or a list of labels" % (qid,))
             if not crit:
                 raise ValueError("question %r: a choice question needs at least one criterion" % (qid,))
+            # A label is used as a dict key when a list of labels is normalised, so a list, dict
+            # or set label raised `TypeError: unhashable type: 'list'` from three frames down --
+            # which names neither the question nor the label, and which `serve` cannot classify
+            # as a caller error, so over HTTP it became a 500 "inference failed" instead of a 422.
+            # Labels are rendered as option text, so a nested structure has no meaning here.
+            for i, label in enumerate(crit if isinstance(crit, list) else crit.keys()):
+                if isinstance(label, (list, dict, set, bytearray)):
+                    raise ValueError(
+                        "question %r: choice label %d is a %s; a label is rendered as option text "
+                        "and used as the answer key, so it must be a scalar (a string, number or "
+                        "None), got %r" % (qid, i, type(label).__name__, label))
         elif t == "score":
             if not isinstance(crit, list):
                 raise ValueError("question %r: a score question takes 'criteria' as a list of level "
