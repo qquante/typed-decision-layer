@@ -549,7 +549,7 @@ export class Agent extends HookRegistry {
       numThreads?: number;
       /** Per-language temperature overrides; see AgentOptions.lang_temperatures. */
       lang_temperatures?: AgentOptions["lang_temperatures"];
-      /** Commit SHA/branch/tag to fetch; published checkpoints pin to a reviewed SHA by default. */
+      /** Optional commit SHA/branch/tag to fetch; omitted uses the Hub default and existing cache. */
       revision?: string | null;
       /**
        * Opt-in `{artifact name: SHA-256 hexdigest}` check before any artifact is parsed
@@ -594,7 +594,9 @@ export class Agent extends HookRegistry {
       tokenizerJson = bundle.tokenizerJson;
       dir = bundle.dir;
       revision = bundle.revision;
-      provider = await createNodeProvider(dir, { device: opts?.device, numThreads: opts?.numThreads });
+      provider = await createNodeProvider(dir, {
+        device: opts?.device, numThreads: opts?.numThreads, expectedSha256: opts?.expectedSha256,
+      });
     }
     if (!tokenizerJson) {
       throw new Error(

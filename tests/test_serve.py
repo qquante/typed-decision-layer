@@ -201,10 +201,14 @@ def test_body_read_preserves_parse_error_codes(monkeypatch):
         assert r.status_code == 400, (payload, r.status_code)
 
 
-def test_health(monkeypatch):
+def test_health_supports_router_without_loaded_revisions(monkeypatch):
+    # FakeRouter deliberately has no loaded_revisions attribute. Injected test or
+    # embedding routers predating revision reporting must remain health-compatible.
     client, _ = _client(monkeypatch)
     r = client.get("/health")
-    assert r.status_code == 200 and r.json()["status"] == "ok"
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+    assert r.json()["revisions"] == {}
 
 
 def test_helpers():

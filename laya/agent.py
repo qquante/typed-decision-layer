@@ -228,13 +228,12 @@ class Agent(HookRegistry):
     ):
         """Load a Laya checkpoint.
 
-        `revision` pins the Hub download to an explicit commit SHA/branch/tag. The
-        published convaiinnovations/* checkpoints default to the reviewed SHA pinned in
-        `laya.revisions.PINNED_REVISIONS` instead of mutable `main`; pass `revision` to
-        override. `expected_sha256` ({path relative to the checkpoint dir: hexdigest})
+        `revision` optionally pins the Hub download to an explicit commit SHA/branch/tag;
+        when omitted, huggingface_hub's normal default and existing offline cache are used.
+        `expected_sha256` ({path relative to the checkpoint dir: hexdigest})
         verifies artifact integrity before any weight is parsed or executed; it is opt-in
-        and applies to local directories too. A missing artifact or digest mismatch raises
-        `ValueError` and loading is refused.
+        and applies to local directories too. A missing artifact raises `FileNotFoundError`
+        and a digest mismatch raises `ValueError`; either error refuses the load.
 
         `fast=True` swaps the encoder/head forward for the TileLang fast path (CUDA only, needs
         `pip install laya[fast]`); see `Agent.accelerate`.
@@ -294,8 +293,7 @@ class Agent(HookRegistry):
                 )
 
         # Verify integrity before any file in the checkpoint is parsed or executed.
-        if expected_sha256:
-            verify_digests(model_dir, expected_sha256)
+        verify_digests(model_dir, expected_sha256)
 
         _fix_tokenizer_config(model_dir)
 

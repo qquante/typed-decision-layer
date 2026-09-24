@@ -38,14 +38,12 @@ def _capturing_snapshot(captured):
 
 
 class ResolveRevisionTests(unittest.TestCase):
-    def test_explicit_revision_wins(self):
+    def test_explicit_revision_is_returned(self):
         self.assertEqual(resolve_revision("convaiinnovations/laya", "abc123"), "abc123")
 
-    def test_published_repos_fall_back_to_the_pin(self):
-        for repo, sha in PINNED_REVISIONS.items():
-            self.assertEqual(resolve_revision(repo), sha)
-            self.assertTrue(all(c in "0123456789abcdef" for c in sha), repo)
-            self.assertEqual(len(sha), 40, repo)
+    def test_published_repos_keep_the_hub_default_without_an_explicit_pin(self):
+        for repo in PINNED_REVISIONS:
+            self.assertIsNone(resolve_revision(repo))
 
     def test_unknown_repo_keeps_the_hub_default(self):
         self.assertIsNone(resolve_revision("acme/custom-model"))
@@ -85,18 +83,30 @@ class VerifyDigestsTests(unittest.TestCase):
             verify_digests(self.dir, {"absent.bin": self.digest})
 
     def test_escaping_paths_rejected(self):
-        for rel in ("../evil", "..", "a/../../evil", "\\..\\evil"):
+        for rel in ("../evil", "..", "a/../../evil", "\\..\\evil", "/absolute/evil", "C:\\absolute\\evil"):
             with self.assertRaises(ValueError, msg=rel):
                 verify_digests(self.dir, {rel: self.digest})
 
+    def test_digest_map_can_come_from_environment(self):
+        with patch.dict(os.environ, {"LAYA_SHA256_DIGESTS": json.dumps({"weights.bin": self.digest})}):
+            verify_digests(self.dir)
+
+    def test_external_onnx_digest_is_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "model.onnx")
+            with open(path, "wb") as f:
+                f.write(b"onnx")
+            digest = hashlib.sha256(b"onnx").hexdigest()
+            verify_digests(self.dir, {"onnx": digest}, onnx_path=path)
+
 
 class AgentPinningTests(unittest.TestCase):
-    def test_hub_load_pins_published_repo(self):
+    def test_hub_load_keeps_the_default_revision(self):
         captured = {}
         with patch("huggingface_hub.snapshot_download", _capturing_snapshot(captured)):
             with self.assertRaises(_StopLoad):
                 Agent("convaiinnovations/laya")
-        self.assertEqual(captured["revision"], PINNED_REVISIONS["convaiinnovations/laya"])
+        self.assertNotIn("revision", captured)
 
     def test_explicit_revision_overrides_the_pin(self):
         captured = {}
@@ -128,9 +138,44 @@ class AgentPinningTests(unittest.TestCase):
 
 
 class RouterRevisionTests(unittest.TestCase):
-    def test_router_stores_an_explicit_revision(self):
-        self.assertEqual(Router(revision="abc123").revision, "abc123")
+    def test_router_stores_explicit_revisions(self):
+        router = Router(revision="default", revisions={"ml": "multi-sha", "typed": "typed-sha"})
+        self.assertEqual(router.revision, "default")
+        self.assertEqual(router.revisions["multilingual"], "multi-sha")
+        self.assertEqual(router.revisions["typed-decisions"], "typed-sha")
         self.assertIsNone(Router().revision)
+        self.assertEqual(Router().revisions, {})
+
+    def test_router_forwards_only_the_selected_per_model_revision(self):
+        import laya.agent
+
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, repo, **kwargs):
+                captured.append((repo, kwargs))
+
+        with patch.object(laya.agent, "Agent", FakeAgent):
+            router = Router(revision="default", revisions={"multilingual": "multi-sha"})
+            router.load("english")
+            router.load("multi")
+
+        self.assertEqual(captured[0][1]["revision"], "default")
+        self.assertEqual(captured[1][1]["revision"], "multi-sha")
+
+    def test_router_omits_revision_when_none_is_configured(self):
+        import laya.agent
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, repo, **kwargs):
+                captured.update(kwargs)
+
+        with patch.object(laya.agent, "Agent", FakeAgent):
+            Router().load("english")
+
+        self.assertNotIn("revision", captured)
 
     def test_loaded_revisions_reports_resident_agents(self):
         router = Router()

@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "../src/agent.js";
 import { Router } from "../src/router.js";
-import { PINNED_REVISIONS, loadNodeBundle, resolveRevision } from "../src/providers.js";
+import { PINNED_REVISIONS, createNodeProvider, loadNodeBundle, loadWebBundle, resolveRevision } from "../src/providers.js";
 
 const fakeProvider = () => ({
   async runEncoder(_b: any) { return { lastHidden: [[1, 0], [0, 1]] }; },
@@ -39,13 +39,12 @@ afterEach(() => {
 });
 
 describe("resolveRevision", () => {
-  it("explicit revision wins over the pin", () => {
+  it("explicit revision is returned", () => {
     expect(resolveRevision("convaiinnovations/laya", "abc123")).toBe("abc123");
   });
-  it("published repos fall back to the reviewed pin", () => {
-    for (const [repo, sha] of Object.entries(PINNED_REVISIONS)) {
-      expect(sha).toMatch(/^[0-9a-f]{40}$/);
-      expect(resolveRevision(repo)).toBe(sha);
+  it("published repos keep the hub default without an explicit pin", () => {
+    for (const repo of Object.keys(PINNED_REVISIONS)) {
+      expect(resolveRevision(repo)).toBeNull();
     }
   });
   it("unknown repos keep the hub default", () => {
@@ -54,7 +53,7 @@ describe("resolveRevision", () => {
 });
 
 describe("loadNodeBundle pinning", () => {
-  it("fetches published checkpoints at the pinned revision and joins it to the cache key", async () => {
+  it("keeps the hub default unless a revision is explicitly requested", async () => {
     const urls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       urls.push(url);
@@ -62,18 +61,44 @@ describe("loadNodeBundle pinning", () => {
         ? new StubResponse(cfgFile["rl_agent_config.json"])
         : new StubResponse(null, 404);
     }));
-    const pin = PINNED_REVISIONS["convaiinnovations/laya"];
-    const cacheDir = path.join(os.homedir(), ".cache", "laya-ts", "hf", "convaiinnovations__laya", "root", pin);
+    const cacheDir = path.join(os.homedir(), ".cache", "laya-ts", "hf", "convaiinnovations__laya", "root");
     try {
       const bundle = await loadNodeBundle("convaiinnovations/laya");
-      expect(urls[0]).toContain(`/resolve/${pin}/`);
+      expect(urls[0]).toContain("/resolve/main/");
       expect(bundle.dir).toBe(cacheDir);
-      // The hub reports the exact commit served; that wins over the requested pin.
+      // The hub reports the exact commit served even when no pin was requested.
       expect(bundle.revision).toBe("abc123");
       expect(bundle.cfg.act_costs).toEqual({ a: 0 });
     } finally {
       fs.rmSync(path.join(os.homedir(), ".cache", "laya-ts", "hf", "convaiinnovations__laya"), { recursive: true, force: true });
     }
+  });
+
+  it("uses an explicit revision in both the URL and cache key", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      return url.endsWith("rl_agent_config.json")
+        ? new StubResponse(cfgFile["rl_agent_config.json"])
+        : new StubResponse(null, 404);
+    }));
+    try {
+      const bundle = await loadNodeBundle("convaiinnovations/laya", { revision: "abc123" });
+      expect(urls[0]).toContain("/resolve/abc123/");
+      expect(bundle.dir).toContain(path.join("root", "abc123"));
+    } finally {
+      fs.rmSync(path.join(os.homedir(), ".cache", "laya-ts", "hf", "convaiinnovations__laya"), { recursive: true, force: true });
+    }
+  });
+
+  it("loadWebBundle reports the x-repo-commit header", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      return url.endsWith("rl_agent_config.json")
+        ? new StubResponse(cfgFile["rl_agent_config.json"])
+        : new StubResponse(null, 404);
+    }));
+    const bundle = await loadWebBundle("convaiinnovations/laya");
+    expect(bundle.revision).toBe("abc123");
   });
 
   it("unpinned repos keep the mutable main default", async () => {
@@ -126,10 +151,18 @@ describe("loadNodeBundle expectedSha256", () => {
 
   it("escaping digest paths are rejected", async () => {
     const dir = makeCheckpoint(cfgFile);
-    for (const rel of ["../evil", "..", "a/../../evil"]) {
+    for (const rel of ["../evil", "..", "a/../../evil", "/absolute/evil", "C:\\absolute\\evil"]) {
       await expect(loadNodeBundle(dir, { expectedSha256: { [rel]: "0".repeat(64) } }))
-        .rejects.toThrow(/unsafe path/);
+        .rejects.toThrow(/unsafe (?:absolute )?path/);
     }
+  });
+
+  it("createNodeProvider refuses mismatched ONNX digests before creating sessions", async () => {
+    const encoder = new TextEncoder().encode("encoder");
+    const dir = makeCheckpoint({ "encoder.onnx": encoder, "head.onnx": new TextEncoder().encode("head") });
+    await expect(createNodeProvider(dir, {
+      expectedSha256: { "encoder.onnx": "0".repeat(64) },
+    })).rejects.toThrow(/SHA-256 mismatch/);
   });
 });
 
@@ -140,8 +173,15 @@ describe("revision plumbing", () => {
     expect(new Agent({ provider: fakeProvider(), cfg: {} }).revision).toBeNull();
   });
 
-  it("Router stores an explicit revision", () => {
-    expect(new Router({ revision: "abc123" }).revision).toBe("abc123");
+  it("Router stores global and per-model revisions", () => {
+    const router = new Router({
+      revision: "default",
+      revisions: { ml: "multi-sha", typed: "typed-sha" },
+    });
+    expect(router.revision).toBe("default");
+    expect(router.revisions.multilingual).toBe("multi-sha");
+    expect(router.revisions["typed-decisions"]).toBe("typed-sha");
     expect(new Router().revision).toBeNull();
+    expect(new Router().revisions).toEqual({});
   });
 });

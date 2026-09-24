@@ -122,6 +122,8 @@ export interface RouterOptions {
   loader?: AgentLoader;
   /** Optional hub revision (commit SHA/branch/tag) applied to every checkpoint load. */
   revision?: string | null;
+  /** Per-model revision overrides, keyed by model name or alias. */
+  revisions?: Record<string, string | null>;
   hooks?: HookArg;
   onPredictStart?: PredictHook;
   onPredictEnd?: PredictHook;
@@ -157,6 +159,7 @@ export class Router extends HookRegistry {
   device: string | null;
   token: string | null | undefined;
   revision: string | null;
+  revisions: Partial<Record<ModelName, string | null>>;
   maxLoaded: number;
   default: ModelName;
   autoTaskDetection: boolean;
@@ -182,9 +185,12 @@ export class Router extends HookRegistry {
     }
     this.device = opts.device ?? null;
     this.token = opts.token ?? (typeof process !== "undefined" ? process.env?.["HF_TOKEN"] : undefined);
-    // Optional hub revision applied to every checkpoint load; published checkpoints pin
-    // to a reviewed SHA even without it (see PINNED_REVISIONS in providers.ts).
+    // Optional hub revision applied to every checkpoint load. Per-model overrides support
+    // standalone repositories whose reviewed commits differ.
     this.revision = opts.revision ?? null;
+    this.revisions = Object.fromEntries(
+      Object.entries(opts.revisions ?? {}).map(([name, value]) => [normaliseName(name), value]),
+    ) as Partial<Record<ModelName, string | null>>;
     this.maxLoaded = Math.max(1, Math.trunc(Number(opts.maxLoaded ?? opts.max_loaded ?? 2)));
     this.default = normaliseName(opts.default ?? "english");
     this.autoTaskDetection = Boolean(opts.autoTaskDetection ?? opts.auto_task_detection ?? false);
@@ -209,14 +215,18 @@ export class Router extends HookRegistry {
     } else {
       const { Agent } = await import("./agent.js");
       const spec = this.models[key];
-      agent = await (Agent as unknown as {
-        load(repo: string, opts?: Record<string, unknown>): Promise<unknown>;
-      }).load(spec.repo, {
+      const revision = Object.prototype.hasOwnProperty.call(this.revisions, key)
+        ? this.revisions[key]
+        : this.revision;
+      const opts: Record<string, unknown> = {
         subfolder: spec.subfolder,
         device: this.device ?? undefined,
         token: this.token ?? undefined,
-        revision: this.revision ?? undefined,
-      });
+      };
+      if (revision) opts.revision = revision;
+      agent = await (Agent as unknown as {
+        load(repo: string, opts?: Record<string, unknown>): Promise<unknown>;
+      }).load(spec.repo, opts);
     }
     this._agents.set(key, agent);
     this._order.push(key);

@@ -198,6 +198,11 @@ class Router(HookRegistry):
         r = Router(preload=True, device="cuda")
         r.preload(["english", "multilingual"])      # or just the two you serve
 
+    Hub revisions are opt-in. `revision` applies one commit to every model;
+    `revisions={"english": "...", "multilingual": "..."}` overrides that per model,
+    which is useful when standalone repositories were reviewed at different commits.
+    Without either, huggingface_hub's normal default and existing offline cache are used.
+
     Hooks are opt-in and run at the Router level: `on_route` sees the routing decision,
     `on_load` / `on_evict` see model lifecycle, and `on_predict_start` / `on_predict_end`
     wrap the whole route+infer call. See `laya.hooks`.
@@ -215,6 +220,7 @@ class Router(HookRegistry):
         device: Optional[str] = None,
         token: Optional[str] = None,
         revision: Optional[str] = None,
+        revisions: Optional[Dict[str, Optional[str]]] = None,
         max_loaded: int = 2,
         default: str = "english",
         auto_task_detection: bool = False,
@@ -238,9 +244,12 @@ class Router(HookRegistry):
         self.device = device
         self.token = token or os.environ.get("HF_TOKEN")
         # Optional Hub revision (commit SHA/branch/tag) applied to every checkpoint load.
-        # The published checkpoints pin to a reviewed SHA even without this; see
-        # `laya.revisions.PINNED_REVISIONS`.
+        # `revisions` overrides it per normalized model name, for standalone repos whose
+        # reviewed commits differ.
         self.revision = revision
+        self.revisions: Dict[str, Optional[str]] = {
+            normalise_name(k): v for k, v in (revisions or {}).items()
+        }
         self.max_loaded = max(1, int(max_loaded))
         self.default = normalise_name(default)
         self.auto_task_detection = bool(auto_task_detection)
@@ -272,8 +281,11 @@ class Router(HookRegistry):
                 return self._agents[key]
             from .agent import Agent
             repo, sub = _split(self.models[key])
-            agent = Agent(repo, device=self.device, token=self.token, subfolder=sub,
-                          revision=self.revision)
+            kwargs = {"device": self.device, "token": self.token, "subfolder": sub}
+            model_revision = self.revisions.get(key, self.revision)
+            if model_revision is not None:
+                kwargs["revision"] = model_revision
+            agent = Agent(repo, **kwargs)
             self._agents[key] = agent
             self._order.append(key)
             evicted = self._evict_locked()

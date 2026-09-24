@@ -54,13 +54,13 @@ class ONNXAgent(HookRegistry):
                               (used to load the tokenizer and config).
             onnx_path: Path to the exported .onnx file.
             subfolder: Optional subfolder if downloading from a repo bundle.
-            revision: Optional Hub revision (commit SHA/branch/tag). Published
-                      convaiinnovations/* checkpoints default to the reviewed SHA pinned
-                      in `laya.revisions.PINNED_REVISIONS` instead of mutable `main`.
+            revision: Optional Hub revision (commit SHA/branch/tag). When omitted,
+                      huggingface_hub's normal default and existing offline cache are used.
             expected_sha256: Optional {path relative to the checkpoint dir: hexdigest}
                       verified before any checkpoint file is parsed; opt-in, and applies
-                      to local directories too. A missing artifact or digest mismatch
-                      raises `ValueError` and loading is refused.
+                      to local directories too. A missing artifact raises
+                      `FileNotFoundError` and a digest mismatch raises `ValueError`; either
+                      error refuses the load.
             hooks (HookArg): Opt-in prediction hooks; see `laya.hooks`.
             on_predict_start (PredictHookArg): An opt-in start hook, run before inference.
             on_predict_end (PredictHookArg): An opt-in end hook, run after inference.
@@ -106,8 +106,7 @@ class ONNXAgent(HookRegistry):
                 )
 
         # Verify integrity before any file in the checkpoint is parsed or executed.
-        if expected_sha256:
-            verify_digests(model_dir, expected_sha256)
+        verify_digests(model_dir, expected_sha256, onnx_path=onnx_path)
 
         cfg_path = os.path.join(model_dir, "rl_agent_config.json")
         if not os.path.exists(cfg_path):

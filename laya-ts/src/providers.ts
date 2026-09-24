@@ -1,20 +1,17 @@
 /** ONNX session shim: Node (onnxruntime-node) + browser (onnxruntime-web).
  * Lazy imports only — unit tests with a fake provider never touch onnxruntime. */
 
-/** Reviewed commit SHAs of the published checkpoints (mirror of laya/revisions.py).
- * Loads of these repos pin to the reviewed revision instead of mutable `main`; bump a
- * pin only after the new revision has been reviewed. */
+/** Opt-in reviewed commit SHAs of the published checkpoints (mirror of laya/revisions.py).
+ * They are not applied implicitly, so existing Hub/offline caches keep working. */
 export const PINNED_REVISIONS: Record<string, string> = {
   "convaiinnovations/laya": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
   "convaiinnovations/laya-multilingual": "e4e9ddf21a7b1903b7acffd8814ad4307bf63a67",
   "convaiinnovations/laya-typed-decisions": "1a793eb568e6718f15941d08f85432581df534e3",
 };
 
-/** Explicit `revision` wins; published repos fall back to their reviewed pin; anything
- * else keeps the hub default (`main`). */
-export function resolveRevision(repoOrId: string, revision?: string | null): string | null {
-  if (revision) return revision;
-  return PINNED_REVISIONS[repoOrId] ?? null;
+/** Return an explicit revision unchanged; otherwise preserve the Hub default and cache. */
+export function resolveRevision(_repoOrId: string, revision?: string | null): string | null {
+  return revision || null;
 }
 
 /** SHA-256 hex via Web Crypto (browsers and modern Node expose globalThis.crypto). */
@@ -29,7 +26,11 @@ async function sha256Hex(data: ArrayBuffer | Uint8Array): Promise<string> {
 
 /** Reject absolute or escaping digest paths before they ever reach the filesystem. */
 function normaliseDigestPath(rel: string): string {
-  const norm = String(rel).replace(/\\/g, "/").replace(/^\/+/, "");
+  const raw = String(rel).replace(/\\/g, "/");
+  if (/^(?:[A-Za-z]:|\/)/.test(raw)) {
+    throw new Error(`laya-ts: unsafe absolute path in expectedSha256: ${JSON.stringify(rel)}`);
+  }
+  const norm = raw;
   if (!norm || norm === ".." || norm.startsWith("../") || norm.includes("/../")) {
     throw new Error(`laya-ts: unsafe path in expectedSha256: ${JSON.stringify(rel)}`);
   }
@@ -157,7 +158,10 @@ function isOomError(e: unknown): boolean {
 }
 
 /** Online-first fetch: try network, cache on success, fall back to CacheStorage. */
-async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
+async function fetchArrayBuffer(
+  url: string,
+  onHeaders?: (response: Response) => void,
+): Promise<ArrayBuffer> {
   const g = globalThis as unknown as { caches?: any };
   let cache: any = null;
   let hit: any = null;
@@ -180,6 +184,7 @@ async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
   if (cache) {
     try {
       const res = await fetch(url);
+      onHeaders?.(res);
       if (res.ok) {
         try {
           await cache.put(url, res.clone());
@@ -208,6 +213,7 @@ async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
     throw new Error(`fetch failed for ${url}`);
   }
   const res = await fetch(url);
+  onHeaders?.(res);
   if (!res.ok) throw new Error(`fetch failed for ${url}: ${res.status}`);
   return await res.arrayBuffer();
 }
@@ -241,8 +247,8 @@ export async function loadNodeBundle(
     if (st.isDirectory()) dir = sub ? path.join(dir, sub) : dir;
     else dir = path.dirname(dir);
   } catch {
-    // Pin published repos to their reviewed commit SHA instead of mutable `main`; the
-    // revision joins the cache key so differently-pinned artifacts never collide.
+    // An explicit revision joins the cache key so differently-pinned artifacts never collide;
+    // otherwise the existing Hub-default cache is reused.
     const revision = resolveRevision(modelDirOrRepo, opts?.revision);
     resolvedRevision = revision;
     const cache = path.join(
@@ -350,8 +356,12 @@ export async function loadWebBundle(
 ): Promise<WebBundle> {
   const revision = resolveRevision(repoOrUrl, opts?.revision);
   const base = baseUrlFor(repoOrUrl, opts?.subfolder ?? null, revision);
+  let reportedRevision = revision;
   const fetchVerifiedJson = async (rel: string): Promise<unknown> => {
-    const buf = await fetchArrayBuffer(`${base}/${rel}`);
+    const buf = await fetchArrayBuffer(`${base}/${rel}`, (response) => {
+      const commit = response.headers?.get?.("x-repo-commit");
+      if (commit) reportedRevision = commit;
+    });
     if (opts?.expectedSha256) await expectDigest(rel, buf, opts.expectedSha256);
     return JSON.parse(new TextDecoder().decode(buf));
   };
@@ -372,7 +382,7 @@ export async function loadWebBundle(
       // Try the next supported Hugging Face layout.
     }
   }
-  return { dir: base, cfg, tokenizerJson, revision };
+  return { dir: base, cfg, tokenizerJson, revision: reportedRevision };
 }
 
 export async function createNodeProvider(
@@ -382,19 +392,16 @@ export async function createNodeProvider(
   const spec = "onnxruntime-" + "node";
   const ort: any = await import(/* @vite-ignore */ spec);
   applyNumThreads(ort, opts?.numThreads);
-  try {
-    const fs: typeof import("node:fs/promises") = await import("node:fs/promises");
-    const path: typeof import("node:path") = await import("node:path");
-    for (const f of ["encoder.onnx", "head.onnx"]) {
-      const p = path.join(modelDir, f);
-      try {
-        await fs.stat(p);
-      } catch {
-        throw new Error(`Incompatible model: '${f}' not found in ${JSON.stringify(modelDir)} (expected ${p}).`);
-      }
+  const fs: typeof import("node:fs/promises") = await import("node:fs/promises");
+  const path: typeof import("node:path") = await import("node:path");
+  for (const f of ["encoder.onnx", "head.onnx"]) {
+    const p = path.join(modelDir, f);
+    try {
+      await fs.stat(p);
+    } catch {
+      throw new Error(`Incompatible model: '${f}' not found in ${JSON.stringify(modelDir)} (expected ${p}).`);
     }
-  } catch (e) {
-    if (e instanceof Error && e.message.includes("not found in")) throw e;
+    if (opts?.expectedSha256) await expectDigest(f, await fs.readFile(p), opts.expectedSha256);
   }
   const dev = String(opts?.device ?? "cpu").toLowerCase();
   const want = dev === "cuda" ? "cuda" : dev === "dml" ? "dml" : "cpu";
