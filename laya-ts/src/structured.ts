@@ -114,6 +114,9 @@ function enumField(path: string, name: string, values: unknown[], description: u
   if (values.length === 0) throw new SchemaError(`${path}: 'enum' must not be empty`);
   if (values.every((v) => typeof v === "boolean")) return noulField(name, description);
   const options: [string, unknown][] = values.map((v) => [v == null ? "null" : String(v), v]);
+  if (new Set(options.map(([label]) => label)).size !== options.length) {
+    throw new SchemaError(`${path}: enum values produce duplicate choice labels`);
+  }
   return {
     name,
     kind: "choice",

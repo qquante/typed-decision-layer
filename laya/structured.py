@@ -80,6 +80,8 @@ def _enum_field(path: str, name: str, values: Sequence[Any], description: Option
     if all(isinstance(v, bool) for v in values):
         return _noul_field(path, name, description)
     options = [(("null" if v is None else str(v)), v) for v in values]
+    if len({label for label, _ in options}) != len(options):
+        raise SchemaError("%s: enum values produce duplicate choice labels" % path)
     criteria = {label: None for label, _ in options}
     question = {
         "type": "choice",

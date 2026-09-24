@@ -115,6 +115,14 @@ check_raises("reject/too many properties", SchemaError,
              _bad({"type": "object", "properties": {("p%d" % i): {"type": "boolean"} for i in range(33)}}))
 check_raises("reject/too many options", SchemaError,
              _bad({"type": "object", "properties": {"a": {"type": "string", "enum": ["v%d" % i for i in range(33)]}}}))
+for colliding in ([1, "1"], [None, "null"], [True, "True"]):
+    check_raises("reject/colliding enum %r" % colliding, SchemaError,
+                 _bad({"type": "object", "properties": {"x": {"enum": colliding}}}))
+try:
+    questions_from_json_schema({"type": "object", "properties": {"x": {"enum": [1, "1"]}}})
+except SchemaError as exc:
+    check("reject/colliding enum names the field", str(exc),
+          "properties.x: enum values produce duplicate choice labels")
 check_raises("reject/non-object root", SchemaError, _bad({"type": "array"}))
 check_raises("reject/empty properties", SchemaError, _bad({"type": "object", "properties": {}}))
 
