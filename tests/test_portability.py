@@ -200,8 +200,13 @@ with mock.patch.object(torch.Tensor, "to", _to_that_ignores_mps):
         result = agent.predict({"body": "some state"}, QUESTIONS)
         check("fallback/answers after a memory failure", result["answers"]["q"]["choice"], "a")
         check("fallback/forward pass retried once", agent.model.calls, 2)
-        check("fallback/device is cpu now", agent.device.type, "cpu")
-        check("fallback/dtype downgraded to fp32", agent.dtype, torch.float32)
+        # the demotion is scoped to the failed request (#344): one oversized call must not
+        # leave every later call on a ~10-15x slower CPU path for the life of the process
+        check("fallback/device restored after the retry", agent.device.type, "mps")
+        check("fallback/a later request is answered without a new demotion",
+              agent.predict({"body": "another state"}, QUESTIONS)["answers"]["q"]["choice"], "a")
+        check("fallback/later request needs no extra forward", agent.model.calls, 3)
+        check("fallback/device still the original after a later call", agent.device.type, "mps")
     except Exception as e:  # noqa: BLE001
         FAIL.append("fallback/memory failure was not survived: %s: %s" % (type(e).__name__, e))
 
@@ -215,6 +220,18 @@ with mock.patch.object(torch.Tensor, "to", _to_that_ignores_mps):
         PASS.append("fallback/non-memory error propagates")
     except Exception as e:  # noqa: BLE001
         FAIL.append("fallback/non-memory error raised %s instead of RuntimeError" % type(e).__name__)
+
+    # a RuntimeError that merely mentions cuda is not an OOM (#344): it used to demote the
+    # agent to CPU permanently and return silently-CPU results
+    agent = _bare_agent(_FailsOnce("CUDA error: device-side assert triggered"))
+    try:
+        agent.predict({"body": "some state"}, QUESTIONS)
+        FAIL.append("fallback/cuda-worded non-memory error propagates (nothing raised)")
+    except RuntimeError:
+        PASS.append("fallback/cuda-worded non-memory error propagates")
+    except Exception as e:  # noqa: BLE001
+        FAIL.append("fallback/cuda-worded non-memory error raised %s instead of RuntimeError"
+                    % type(e).__name__)
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
