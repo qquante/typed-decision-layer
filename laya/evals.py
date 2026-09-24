@@ -139,8 +139,7 @@ class MeanConfidence(Evaluator):
     name = "mean_confidence"
 
     def score(self, answer, expected):
-        confidence = answer.get("confidence")
-        return float(confidence) if isinstance(confidence, (int, float)) else None
+        return _answer_confidence(answer)
 
 
 DEFAULT_EVALUATORS = (ChoiceAccuracy, NoulAccuracy, ScoreMAE, MeanConfidence)
@@ -151,6 +150,15 @@ def default_evaluators() -> List[Evaluator]:
 
 
 def _answer_confidence(answer: Dict[str, Any]) -> Optional[float]:
+    """The calibrated confidence Laya reports: `answer_confidence`, not the entropy score.
+
+    `answer["confidence"]` is entropy-based for choice and score, so calibration metrics must use
+    `answer_confidence`, which Laya reports on every answer type. The other keys are fallbacks for
+    a stripped-down result.
+    """
+    confidence = answer.get("answer_confidence")
+    if isinstance(confidence, (int, float)):
+        return float(confidence)
     confidence = answer.get("confidence")
     if isinstance(confidence, (int, float)):
         return float(confidence)
@@ -225,6 +233,10 @@ class EvalReport:
         ok = True
         for metric, base_value in base.items():
             if metric not in self.overall:
+                continue
+            # Latency is informational; a re-run differs by timing noise, not quality, so it is
+            # compared only when a tolerance explicitly names it.
+            if metric.endswith("_ms") and metric not in tolerances:
                 continue
             value = self.overall[metric]
             diff = value - float(base_value)

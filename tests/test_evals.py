@@ -64,6 +64,23 @@ def test_noul_and_score_math():
     assert within.name == "score_within_0.5"
 
 
+def test_calibration_uses_answer_confidence():
+    answer = {"type": "choice", "choice": "a", "confidence": 0.2, "answer_confidence": 0.9}
+    assert MeanConfidence().score(answer, "a") == pytest.approx(0.9), "calibrated, not entropy"
+    report = evaluate(StubRunner({"s": {"intent": answer}}),
+                      Dataset([Example("s", Q, {"intent": "a"})]))
+    assert report.overall["mean_confidence"] == pytest.approx(0.9)
+
+
+def test_compare_ignores_latency_by_default():
+    report = EvalReport(overall={"choice_accuracy": 0.8, "latency_p50_ms": 12.0})
+    baseline = {"overall": {"choice_accuracy": 0.8, "latency_p50_ms": 5.0}}
+    ok, deltas = report.compare(baseline)
+    assert ok and "latency_p50_ms" not in deltas, "timing noise is not a quality regression"
+    bad, deltas = report.compare(baseline, {"latency_p50_ms": 1.0})
+    assert not bad and "latency_p50_ms" in deltas
+
+
 def test_ece_on_known_inputs():
     assert ece([1.0, 1.0], [True, False]) == pytest.approx(0.5)
     assert ece([0.0, 0.0], [False, False]) == pytest.approx(0.0)
@@ -188,7 +205,7 @@ def test_cli_validate_and_dispatch(tmp_path):
 
     good = _write_dataset(tmp_path, [{"state": "s", "questions": Q, "expected": {"intent": "a"}}])
     assert evals_cli.main(["validate", good]) == 0
-    assert cli.main(["eval", "validate", good]) == 0, "`laya eval` dispatches to laya-eval"
+    assert cli.main(["eval", "validate", good]) == 0, "`laya eval` dispatches to laya-evals"
 
     bad = tmp_path / "bad.jsonl"
     bad.write_text("{not json\n", encoding="utf-8")
