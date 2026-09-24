@@ -120,6 +120,8 @@ export interface RouterOptions {
   langGuess?: LangGuess;
   lang_guess?: LangGuess;
   loader?: AgentLoader;
+  /** Optional hub revision (commit SHA/branch/tag) applied to every checkpoint load. */
+  revision?: string | null;
   hooks?: HookArg;
   onPredictStart?: PredictHook;
   onPredictEnd?: PredictHook;
@@ -154,6 +156,7 @@ export class Router extends HookRegistry {
   models: Record<string, ModelSpec>;
   device: string | null;
   token: string | null | undefined;
+  revision: string | null;
   maxLoaded: number;
   default: ModelName;
   autoTaskDetection: boolean;
@@ -179,6 +182,9 @@ export class Router extends HookRegistry {
     }
     this.device = opts.device ?? null;
     this.token = opts.token ?? (typeof process !== "undefined" ? process.env?.["HF_TOKEN"] : undefined);
+    // Optional hub revision applied to every checkpoint load; published checkpoints pin
+    // to a reviewed SHA even without it (see PINNED_REVISIONS in providers.ts).
+    this.revision = opts.revision ?? null;
     this.maxLoaded = Math.max(1, Math.trunc(Number(opts.maxLoaded ?? opts.max_loaded ?? 2)));
     this.default = normaliseName(opts.default ?? "english");
     this.autoTaskDetection = Boolean(opts.autoTaskDetection ?? opts.auto_task_detection ?? false);
@@ -209,6 +215,7 @@ export class Router extends HookRegistry {
         subfolder: spec.subfolder,
         device: this.device ?? undefined,
         token: this.token ?? undefined,
+        revision: this.revision ?? undefined,
       });
     }
     this._agents.set(key, agent);
