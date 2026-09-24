@@ -673,6 +673,7 @@ class Router(HookRegistry):
         self,
         requests: Sequence[Dict[str, Any]],
         batch_size: Optional[int] = None,
+        hooks_timeout: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """Route and execute a heterogeneous request batch with minimal model churn.
 
@@ -697,6 +698,7 @@ class Router(HookRegistry):
                 ``questions`` and may include ``model``, ``task``, ``lang`` or
                 ``lang_guess`` overrides.
             batch_size: Optional maximum number of states per Agent forward-pass batch.
+            hooks_timeout: Override the Router's ``hooks_timeout`` for this call.
 
         Returns:
             One normal Router prediction result per request, in the same order as the input.
@@ -722,6 +724,7 @@ class Router(HookRegistry):
         # for a request that arrived through `predict_batch`.
         active = compose_hooks(self.hooks)
         raise_errors = self.hooks_raise
+        timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
 
         for model_name, indices in groups.items():
             agent = self.load(model_name)
@@ -735,7 +738,8 @@ class Router(HookRegistry):
                                          decision=dict(decisions[i]), model=model_name, agent=agent,
                                          router=self)
                     started.append(ctx)
-                    dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                    dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors,
+                             lock=self._hooks_lock, timeout=timeout)
 
                 # Agent.predict_batch evaluates one shared question schema and token budget over
                 # many states. Preserve Router's heterogeneous-request API by splitting each
@@ -826,16 +830,17 @@ class Router(HookRegistry):
                     if ctx.results is None:
                         ctx.error = exc
                         try:
-                            dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                            dispatch(active, "on_error", ctx, raise_errors=raise_errors,
+                                     lock=self._hooks_lock, timeout=timeout)
                         except BaseException as hook_exc:
                             exc.__context__ = hook_exc
                 try:
-                    self._end_contexts(active, started, raise_errors)
+                    self._end_contexts(active, started, raise_errors, timeout)
                 except BaseException as hook_exc:
                     exc.__context__ = hook_exc
                 raise
 
-            self._end_contexts(active, started, raise_errors)
+            self._end_contexts(active, started, raise_errors, timeout)
             for i, ctx in zip(indices, started):
                 results[i] = ctx.results[0]
 
@@ -848,7 +853,8 @@ class Router(HookRegistry):
 
     predict_many = predict_batch
 
-    def _end_contexts(self, active: List[Any], contexts: List[PredictContext], raise_errors: bool) -> None:
+    def _end_contexts(self, active: List[Any], contexts: List[PredictContext], raise_errors: bool,
+                      timeout: Optional[float] = None) -> None:
         """Finish each request of a batch the way `predict`'s `finally` finishes one.
 
         Every context gets its `on_predict_end` even if an earlier one's end hook raises; the
@@ -864,7 +870,8 @@ class Router(HookRegistry):
         first_error: Optional[BaseException] = None
         for ctx in contexts:
             try:
-                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors,
+                         lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 if ctx.error is not None:
                     ctx.error.__context__ = hook_exc

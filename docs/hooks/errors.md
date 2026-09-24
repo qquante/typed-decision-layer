@@ -152,6 +152,11 @@ its own bound rather than relying on `hooks_timeout` to stop it.
 For an async hook, the coroutine runs on the event loop; a timeout on the calling side still
 returns after the limit, and the coroutine keeps running on the loop.
 
+The timeout also releases the `hooks_concurrent=False` lock: dispatch waits for the hook only up
+to the limit, then moves on, while the timed-out hook keeps running outside the lock. So the lock
+serialises the hooks that finish in time, not every hook that was ever started; a hook that
+overruns no longer blocks the ones behind it.
+
 ## Choosing a policy
 
 | hook kind | recommended | why |
