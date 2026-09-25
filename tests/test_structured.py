@@ -70,6 +70,9 @@ check("map/boolean is noul", questions["needs_human"]["type"], "noul")
 check("map/integer enum becomes a choice", questions["priority"]["type"], "choice")
 check("map/integer enum labels are strings", list(questions["priority"]["criteria"]), ["1", "2", "3"])
 check("map/plan has one field per property", len(plan_from_json_schema(SCHEMA)), 4)
+check("map/nullable boolean remains noul",
+      questions_from_json_schema({"type": "object", "properties": {"a": {"type": ["null", "boolean"]}}})["a"]["type"],
+      "noul")
 
 
 # --------------------------------------------------------------- projection
@@ -101,6 +104,12 @@ def _bad(schema):
 
 check_raises("reject/free string", SchemaError,
              _bad({"type": "object", "properties": {"a": {"type": "string"}}}))
+check_raises("reject/multiple non-null types", SchemaError,
+             _bad({"type": "object", "properties": {"a": {"type": ["boolean", "integer"],
+                                                              "minimum": 0, "maximum": 2}}}))
+check_raises("reject/nullable union of multiple types", SchemaError,
+             _bad({"type": "object", "properties": {"a": {"type": ["null", "integer", "boolean"],
+                                                              "minimum": 0, "maximum": 2}}}))
 check_raises("reject/array", SchemaError,
              _bad({"type": "object", "properties": {"a": {"type": "array", "items": {"type": "string"}}}}))
 check_raises("reject/nested object", SchemaError,
