@@ -63,14 +63,14 @@ def validate_questions(questions: Any) -> dict:
                     "invalid_questions",
                     f"questions[{name}].criteria must be a non-empty object of label -> description",
                 )
-            entry["criteria"] = {str(k): str(v) for k, v in criteria.items()}
+            entry["criteria"] = {str(k): v for k, v in criteria.items()}
         elif qtype == "score":
             if not isinstance(criteria, list) or not criteria:
                 raise ToolError(
                     "invalid_questions",
                     f"questions[{name}].criteria must be a non-empty list of rubric levels",
                 )
-            entry["criteria"] = [str(x) for x in criteria]
+            entry["criteria"] = list(criteria)
         else:  # noul
             if criteria is not None:
                 if not isinstance(criteria, dict):
@@ -78,7 +78,9 @@ def validate_questions(questions: Any) -> dict:
                         "invalid_questions",
                         f"questions[{name}].criteria must be an object when present (noul)",
                     )
-                entry["criteria"] = {str(k): str(v) for k, v in criteria.items()}
+                entry["criteria"] = {str(k): v for k, v in criteria.items()}
+            if "labels" in spec:
+                entry["labels"] = spec["labels"]
         cleaned[name] = entry
     return cleaned
 

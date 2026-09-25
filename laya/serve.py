@@ -57,6 +57,10 @@ _KNOWN_MODELS = {"english", "multilingual", "typed-decisions"}
 MAX_QUESTIONS = 64
 MAX_STATE_CHARS = 50000
 MAX_BODY_BYTES = 2 * 1024 * 1024
+# HTTP-only amplification guard; the library keeps its head_max_len-aware budget.
+MAX_CHOICE_OPTIONS = 100
+MAX_SCORE_LEVELS = 32
+MAX_TOTAL_OPTIONS = 512
 # Public Hugging Face ids, accepted so a client can name a checkpoint. The root bundle is
 # deliberately absent: the documented ``convaiinnovations/laya`` value means
 # "let the Router choose", rather than pinning the English checkpoint.
@@ -105,14 +109,51 @@ def _resolve_port() -> int:
 
 
 def _check_request_limits(state: Any, questions: Any) -> None:
-    """Reject oversized inference requests before tokenization (413)."""
+    """Reject absent or oversized inference requests before tokenization (400/413)."""
     from fastapi import HTTPException
 
+    # `serialize_state(None)` is `json.dumps(None)` == the four characters `null`, so a body with
+    # no `state` key, or `"state": null`, was answered as a decision about the literal text
+    # "null" -- HTTP 200, and at ~0.94 confidence here, byte-identical to sending `"state":
+    # "null"`. Nothing downstream can tell that apart from a real string, so the check has to
+    # happen before serialization. The repo's other two surfaces already require a state:
+    # examples/server.py declares it as a required field and mcp/tools.py rejects an empty one.
+    if state is None:
+        raise HTTPException(status_code=400, detail="'state' is required")
     if not isinstance(questions, dict):
         raise HTTPException(status_code=400, detail="'questions' must be an object")
     if len(questions) > MAX_QUESTIONS:
         raise HTTPException(status_code=413,
                             detail="too many questions (%d > %d)" % (len(questions), MAX_QUESTIONS))
+
+    total_options = 0
+    for qid, question in questions.items():
+        if not isinstance(question, dict):
+            continue
+        crit = question.get("criteria")
+        qtype = question.get("type")
+        if qtype == "choice" and isinstance(crit, (dict, list)):
+            count = len(crit)
+            total_options += count
+            if count > MAX_CHOICE_OPTIONS:
+                raise HTTPException(
+                    status_code=413,
+                    detail="too many choice options for %r (%d > %d)" % (qid, count, MAX_CHOICE_OPTIONS),
+                )
+        elif qtype == "score" and isinstance(crit, list):
+            count = len(crit)
+            total_options += count
+            if count > MAX_SCORE_LEVELS:
+                raise HTTPException(
+                    status_code=413,
+                    detail="too many score levels for %r (%d > %d)" % (qid, count, MAX_SCORE_LEVELS),
+                )
+    if total_options > MAX_TOTAL_OPTIONS:
+        raise HTTPException(
+            status_code=413,
+            detail="too many answer options across questions (%d > %d)" % (total_options, MAX_TOTAL_OPTIONS),
+        )
+
     try:
         state_len = len(state) if isinstance(state, str) else len(str(state))
     except Exception:
@@ -242,6 +283,7 @@ def create_app(router: Optional[Any] = None):
         return {
             "status": "ok",
             "loaded": router.loaded,
+            "revisions": getattr(router, "loaded_revisions", {}),
             "device": os.environ.get("LAYA_DEVICE") or "auto",
         }
 

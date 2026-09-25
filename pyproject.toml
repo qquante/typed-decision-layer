@@ -67,6 +67,7 @@ langgraph = [
 [project.scripts]
 laya = "laya.cli:main"
 laya-serve = "laya.serve:main"
+laya-evals = "laya.evals_cli:main"
 laya-mcp-server = "laya.mcp.server:main"
 
 [project.urls]
