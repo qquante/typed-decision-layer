@@ -772,7 +772,7 @@ override on your own data rather than treating `A`/`B` as a universal fix.
 
 Laya can be exposed as an [MCP](https://modelcontextprotocol.io) stdio server, so any MCP
 client (OpenClaw, Claude Desktop, Cursor, ...) can call typed decisions as tools
-(`laya_predict`, `laya_route`, `laya_preset`, `laya_status`) without writing glue code.
+(`laya_predict`, `laya_route`, `laya_shortlist`, `laya_preset`, `laya_status`) without writing glue code.
 This is an **optional extra**: the core package has no `mcp` dependency.
 
 ```bash
@@ -805,7 +805,13 @@ package:
 | `LAYA_THREADS` | (torch default) | Same as `laya.serve`: cap torch intra-op threads for CPU inference; keep it at or below the physical core count |
 
 The tools return structured JSON (answers with probabilities, routing metadata, device,
-`latency_ms`). As with the SDK, use it for structured decisions only; not for open Q&A or
+`latency_ms`). `laya_shortlist` is the MCP form of [`predict_shortlist`](#honest-limits):
+it shortlists a many-option choice question to its `k` most likely labels by embedding
+similarity (mean-pooled from the answering checkpoint's own encoder, so no extra model is
+downloaded), answers in one forward pass, and returns per-question shortlist metadata
+(kept labels, cosine scores, `k`, option count). The guardrails shown on every decision
+tool point clients here for >20-option choices. As with the SDK, use it for structured
+decisions only; not for open Q&A or
 text generation. Tests: `tests/test_mcp.py` (CI, no weights) and
 `tests/test_mcp_local_e2e.py` (local, real weights and a real stdio handshake).
 
