@@ -123,7 +123,8 @@ const SHARED_WORDS: Set<string> = (() => {
   return out;
 })();
 
-const WORD_RE = /[^\W\d_]+/gu;
+// JS `\w` is ASCII-only, so Python's `[^\W\d_]` needs the Unicode classes spelled out (Nl/No are in Python's `\w`).
+const WORD_RE = /[\p{L}\p{Nl}\p{No}]+/gu;
 // Lookbehind for the same reason as the Python side (see laya/lang.py): without it the
 // greedy prefix is retried at every offset inside a run of word characters, which is
 // quadratic in the run's length -- 50 000 characters of one token took 1540 ms here.

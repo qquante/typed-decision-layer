@@ -69,4 +69,15 @@ describe("lang", () => {
     expect(analyse("que hora es en australia").language).toBe("es");
     expect(analyse("baisse le volume du haut-parleur").language).toBe("fr");
   });
+  it.each<[string, string | null, boolean]>([
+    ["Preciso do contrato confidencial assinado até sexta.", "pt", false],
+    ["Gătește-mi o rețetă de sarmale de post pentru mâine.", "ro", false],
+    ["Müşteriden iki kez ücret alındı ve para iadesi istiyor", null, false],
+    ["Khách hàng đã bị thu phí hai lần và muốn được hoàn tiền ngay", null, false],
+  ])("counts accented words whole, like Python: %s", (text, language, english) => {
+    const a = analyse(text);
+    expect(a.language).toBe(language);
+    expect(a.isEnglish).toBe(english);
+    expect(a.languageUndecided).toBe(language === null);
+  });
 });
