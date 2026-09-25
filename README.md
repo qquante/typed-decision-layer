@@ -633,6 +633,8 @@ else:
 
 A threshold is a policy you choose from measured accuracy at that coverage on your data, not a property of the model. Both checkpoints are over-confident as shipped and `laya-multilingual` has no fitted temperatures at all, so fit them before relying on these numbers — see [Calibration](#calibration) above, and the [fine-tuning notebook](notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb) for the fitting loop itself. Then pick the point where the errors you accept are ones you can live with. Confidence orders decisions; it does not establish that a decision is correct.
 
+A threshold also depends on the autocast dtype. On CUDA at compute capability 8 or above the runtime uses the checkpoint's `amp_dtype`, which is bf16 for all three shipped checkpoints. On the fixed set from `benchmarks/parity_fast.py` (60 states, 288 questions per checkpoint, RTX 2000 Ada) bf16 moves a probability by up to 0.073 against the fp32 forward and flips 3 of 864 argmaxes across the three checkpoints; fp16 stays within 0.019 and flips none, at the same latency. `LAYA_CUDA_AMP=fp16` selects fp16 and `LAYA_CUDA_AMP=bf16` selects bf16 (`LAYA_CPU_AMP=bf16` is the CPU counterpart). Fit and measure a threshold in the dtype you serve with.
+
 ---
 
 ## Prediction Hooks
@@ -772,7 +774,7 @@ override on your own data rather than treating `A`/`B` as a universal fix.
 
 Laya can be exposed as an [MCP](https://modelcontextprotocol.io) stdio server, so any MCP
 client (OpenClaw, Claude Desktop, Cursor, ...) can call typed decisions as tools
-(`laya_predict`, `laya_route`, `laya_preset`, `laya_status`) without writing glue code.
+(`laya_predict`, `laya_route`, `laya_shortlist`, `laya_preset`, `laya_status`) without writing glue code.
 This is an **optional extra**: the core package has no `mcp` dependency.
 
 ```bash
@@ -805,7 +807,13 @@ package:
 | `LAYA_THREADS` | (torch default) | Same as `laya.serve`: cap torch intra-op threads for CPU inference; keep it at or below the physical core count |
 
 The tools return structured JSON (answers with probabilities, routing metadata, device,
-`latency_ms`). As with the SDK, use it for structured decisions only; not for open Q&A or
+`latency_ms`). `laya_shortlist` is the MCP form of [`predict_shortlist`](#honest-limits):
+it shortlists a many-option choice question to its `k` most likely labels by embedding
+similarity (mean-pooled from the answering checkpoint's own encoder, so no extra model is
+downloaded), answers in one forward pass, and returns per-question shortlist metadata
+(kept labels, cosine scores, `k`, option count). The guardrails shown on every decision
+tool point clients here for >20-option choices. As with the SDK, use it for structured
+decisions only; not for open Q&A or
 text generation. Tests: `tests/test_mcp.py` (CI, no weights) and
 `tests/test_mcp_local_e2e.py` (local, real weights and a real stdio handshake).
 

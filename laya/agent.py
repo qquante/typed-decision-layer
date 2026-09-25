@@ -23,11 +23,15 @@ from .common import (
     answer_confidence,
     confidence_from_probs,
     _resolve_noul_labels,
+    encode_text,
     render_options,
     serialize_state,
     temp_bucket,
 )
-from .hooks import HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks
+from .hooks import (
+    HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
+    validate_timeout,
+)
 from .revisions import resolve_revision, snapshot_revision, verify_digests
 
 
@@ -200,6 +204,18 @@ def _mps_amp_min_rows() -> int:
         return MPS_AMP_MIN_ROWS_DEFAULT
 
 
+def _cuda_amp_dtype(checkpoint_default: Optional[str]) -> torch.dtype:
+    """Autocast dtype on CUDA at compute capability >= 8: the checkpoint's `amp_dtype` (bf16 for the
+    shipped checkpoints), or LAYA_CUDA_AMP=fp16|bf16 when set. fp16 stays 2-10x closer to the fp32
+    forward than bf16 on every shipped checkpoint at the same speed; anything else is ignored."""
+    raw = os.environ.get("LAYA_CUDA_AMP", "").lower()
+    if raw in ("fp16", "float16"):
+        return torch.float16
+    if raw in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    return amp_dtype(checkpoint_default)
+
+
 class Agent(HookRegistry):
     """System 1 decision model runtime: fast, non-autoregressive, calibrated decisions."""
 
@@ -207,6 +223,7 @@ class Agent(HookRegistry):
     # hand-built instance (`Agent.__new__` in tests) working and make an unset hook a no-op.
     hooks_raise = True
     hooks_concurrent = True
+    hooks_timeout = None
     _hooks_lock = None
     model_id = None
     # Autocast is chosen per device in __init__; this default covers instances built
@@ -232,6 +249,7 @@ class Agent(HookRegistry):
         on_predict_end=None,
         hooks_raise: bool = True,
         hooks_concurrent: bool = True,
+        hooks_timeout: Optional[float] = None,
     ):
         """Load a Laya checkpoint.
 
@@ -250,21 +268,19 @@ class Agent(HookRegistry):
         downloaded, so bundling does not cost every user the whole family.
 
         `hooks` / `on_predict_start` / `on_predict_end` observe or shape every prediction; see
-        `laya.hooks`. `hooks_raise=False` warns and continues when a hook fails, and
-        `hooks_concurrent=False` serialises hooks that are not safe to run in parallel.
+        `laya.hooks`. `hooks_raise=False` warns and continues when a hook fails,
+        `hooks_concurrent=False` serialises hooks that are not safe to run in parallel, and
+        `hooks_timeout` bounds each hook call in seconds (None means no limit).
         """
         self.hooks = normalise_hooks(hooks, on_predict_start, on_predict_end)
         self.hooks_raise = bool(hooks_raise)
         self.hooks_concurrent = bool(hooks_concurrent)
+        self.hooks_timeout = None if hooks_timeout is None else validate_timeout(hooks_timeout)
         self._hooks_lock = threading.RLock() if not hooks_concurrent else None
         self._hooks_mutex = threading.Lock()
         self.model_id = model_id_or_path
 
         from safetensors.torch import load_file
-        try:
-            from transformers.initialization import no_init_weights
-        except ImportError:  # Transformers 4.x
-            from transformers.modeling_utils import no_init_weights
 
         model_dir = model_id_or_path
         self.revision: Optional[str] = None
@@ -349,10 +365,9 @@ class Agent(HookRegistry):
         self.tok = _load_tokenizer(tok_dir, self.cfg)
 
         enc_dir = os.path.join(model_dir, "encoder")
-        # The checkpoint supplies every parameter; skip random/base-model weights.
-        with no_init_weights():
-            self.model = build_model(self.cfg, encoder_dir=enc_dir if os.path.exists(enc_dir) else None,
-                                     pretrained=False)
+        # build_model skips initialisation of every parameter; the checkpoint supplies them all.
+        self.model = build_model(self.cfg, encoder_dir=enc_dir if os.path.exists(enc_dir) else None,
+                                 pretrained=False)
 
         # Load weights and verify architectural compatibility
         weights = load_file(weights_path)
@@ -410,8 +425,9 @@ class Agent(HookRegistry):
                 % (TEMP_MIN, TEMP_MAX, ", ".join(rejected)),
                 RuntimeWarning, stacklevel=2)
         # Autocast policy. CUDA, MPS and XPU all support fp16/bf16 autocast and the shipped
-        # checkpoints are trained in reduced precision. CPU bf16 is only a win on hardware with
-        # native BF16, so it stays opt-in via LAYA_CPU_AMP=bf16. MPS fp16 is slower than fp32 on
+        # checkpoints are trained in reduced precision; on CUDA the checkpoint's `amp_dtype`
+        # (bf16) is the default and LAYA_CUDA_AMP=fp16|bf16 overrides it. CPU bf16 is only a win
+        # on hardware with native BF16, so it stays opt-in via LAYA_CPU_AMP=bf16. MPS fp16 is slower than fp32 on
         # a single small row (autocast overhead dominates) and only wins once the batch has
         # several rows, so it is gated per call by `mps_amp_min_rows` (default 5, override with
         # LAYA_MPS_AMP_MIN_ROWS) rather than enabled unconditionally. XPU autocast supports
@@ -426,7 +442,7 @@ class Agent(HookRegistry):
             if torch.cuda.get_device_capability(self.device)[0] < 8:
                 self.dtype = torch.float16
             else:
-                self.dtype = amp_dtype(self.cfg.get("amp_dtype", "fp16"))
+                self.dtype = _cuda_amp_dtype(self.cfg.get("amp_dtype", "fp16"))
         elif self.device.type == "mps":
             self.amp_enabled = True
             self.dtype = torch.float16
@@ -646,7 +662,8 @@ class Agent(HookRegistry):
         # re-serializing and re-tokenizing it inside build_sequence per question was pure
         # duplicated work. Tokenize in full and let build_sequence slice per question, so
         # left-truncation for conversation lists keeps its meaning.
-        state_ids = self.tok(
+        state_ids = encode_text(
+            self.tok,
             serialize_state(state).replace(self.tok.mask_token, " "),
             add_special_tokens=False,
         )["input_ids"]
@@ -802,6 +819,7 @@ class Agent(HookRegistry):
                       hooks=None,
                       on_predict_start=None, on_predict_end=None,
                       hooks_raise: Optional[bool] = None,
+                      hooks_timeout: Optional[float] = None,
                       max_len: Optional[int] = None,
                       head_max_len: Optional[int] = None,
                       sort_by_length: bool = False) -> List[Dict[str, Any]]:
@@ -824,6 +842,7 @@ class Agent(HookRegistry):
                     state/questions or call `ctx.skip(...)` to short-circuit inference.
             on_predict_end (PredictHookArg): A per-call end hook. It may rewrite the results.
             hooks_raise: Override the Agent's `hooks_raise` for this call.
+            hooks_timeout: Override the Agent's `hooks_timeout` for this call.
             max_len: Override the agent config's `max_len` for this call. A start hook may also
                     set `ctx.max_len` to shape the token budget.
             head_max_len: Override the agent config's `head_max_len` for this call. A start hook
@@ -840,10 +859,11 @@ class Agent(HookRegistry):
         """
         active = compose_hooks(self.hooks, hooks, on_predict_start, on_predict_end)
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
+        timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
         ctx = PredictContext(states=states, questions=questions, model=self.model_id, agent=self,
                              max_len=max_len, head_max_len=head_max_len)
         try:
-            dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+            dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             states, questions = ctx.states, ctx.questions
             if ctx.results is None:
                 # A start hook may have normalised a bare string/dict into a list; only the value
@@ -914,7 +934,7 @@ class Agent(HookRegistry):
         except BaseException as exc:
             ctx.error = exc
             try:
-                dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 # A failing on_error hook must not hide the failure that triggered it.
                 exc.__context__ = hook_exc
@@ -924,7 +944,7 @@ class Agent(HookRegistry):
             if ctx.results is not None:
                 ctx.usage = aggregate_usage(ctx.results)
             try:
-                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 # End hooks run on the failure path too; do not let one mask the real error.
                 if ctx.error is not None:
@@ -1039,6 +1059,7 @@ class Agent(HookRegistry):
     def system_one(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]], lang: Optional[str] = None,
                    hooks=None, on_predict_start=None, on_predict_end=None,
                    hooks_raise: Optional[bool] = None,
+                   hooks_timeout: Optional[float] = None,
                    max_len: Optional[int] = None,
                    head_max_len: Optional[int] = None) -> Dict[str, Any]:
         """Evaluate typed questions across state in a single, parallel forward pass.
@@ -1066,6 +1087,7 @@ class Agent(HookRegistry):
         return self.predict_batch([state], questions, lang=lang, hooks=hooks,
                                   on_predict_start=on_predict_start,
                                   on_predict_end=on_predict_end, hooks_raise=hooks_raise,
+                                  hooks_timeout=hooks_timeout,
                                   max_len=max_len, head_max_len=head_max_len)[0]
 
     def __enter__(self):
@@ -1113,7 +1135,8 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
          revision: Optional[str] = None, expected_sha256: Optional[Dict[str, str]] = None,
          lang_temperatures: Optional[Dict[str, Dict[str, Any]]] = None,
          hooks=None, on_predict_start=None, on_predict_end=None,
-         hooks_raise: bool = True, hooks_concurrent: bool = True) -> Agent:
+         hooks_raise: bool = True, hooks_concurrent: bool = True,
+         hooks_timeout: Optional[float] = None) -> Agent:
     """Load a Laya agent.
 
     `subfolder` picks one checkpoint out of a repo that bundles several:
@@ -1130,4 +1153,5 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
                  revision=revision, expected_sha256=expected_sha256,
                  lang_temperatures=lang_temperatures,
                  hooks=hooks, on_predict_start=on_predict_start, on_predict_end=on_predict_end,
-                 hooks_raise=hooks_raise, hooks_concurrent=hooks_concurrent)
+                 hooks_raise=hooks_raise, hooks_concurrent=hooks_concurrent,
+                 hooks_timeout=hooks_timeout)
