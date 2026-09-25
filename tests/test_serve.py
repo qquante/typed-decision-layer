@@ -392,6 +392,42 @@ def test_validation_errors_are_not_logged_as_failures(monkeypatch, caplog):
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR], caplog.records
 
 
+def test_a_nested_choice_label_is_a_caller_error_not_a_server_fault(monkeypatch):
+    """A `criteria` list containing a list/dict label is the caller's mistake, so it must be 422.
+
+    It used to raise `TypeError: unhashable type: 'list'` from `_to_internal`, three frames below
+    `_check_question`, which names neither the question nor the label -- and `serve` maps only
+    `ValueError` to 422, so the caller got a 500 "inference failed" with the reason discarded.
+    `ValueError` is what carries the message to the client, so the guard has to raise that type.
+    """
+    class ValidatingRouter:
+        """The real guard, without a checkpoint: what `Agent.system_one` runs before encoding.
+
+        The app does not validate `criteria` itself -- the agent does -- so the stub calls the
+        same guard `system_one` calls, and any `ValueError` it raises is what `serve` has to map
+        to 422. `predict` still fails loudly if the guard lets something through.
+        """
+
+        loaded = ["english"]
+
+        def predict(self, state, questions, model=None):
+            from laya.agent import Agent
+            for qid, qdef in questions.items():
+                Agent._check_question(qid, qdef)
+            raise AssertionError("validation should have rejected this before predict()")
+
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    client = TestClient(create_app(router=ValidatingRouter()), raise_server_exceptions=False)
+
+    for label in (["billing"], {"billing": "x"}):
+        body = dict(REQ)
+        body["questions"] = {"dept": {"type": "choice", "instructions": "Which team?",
+                                      "criteria": [label, "tech"]}}
+        response = client.post("/v1/systemone", json=body)
+        assert response.status_code == 422, (label, response.status_code, response.text)
+        assert "choice label 0" in response.text, response.text
+
+
 def test_inference_timing_headers():
     """POST /v1/systemone returns Server-Timing and X-Inference-Time-Ms headers."""
     router = FakeRouter()
