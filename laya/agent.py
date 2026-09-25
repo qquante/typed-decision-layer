@@ -136,6 +136,11 @@ def _verify_compatibility(model: torch.nn.Module, cfg: Dict, weights: Dict[str, 
 _TOKENIZERS: Dict[tuple, Any] = {}
 _TOKENIZERS_LOCK = threading.Lock()
 
+# The per-inference CPU fallback rewrites shared runtime state (device, dtype, amp) and moves the
+# model while other threads may be running their own forward, so the demotion and the restore are
+# serialised. A second request that hits OOM waits here and re-demotes only if it needs to.
+_OOM_FALLBACK_LOCK = threading.Lock()
+
 
 def _load_tokenizer(tok_dir: str, cfg: Dict) -> Any:
     """Tokenizer for a checkpoint, parsed once per process.
@@ -493,6 +498,29 @@ class Agent(HookRegistry):
             self.model.forward = self._stock_forward
             self._fast = None
 
+    def _restore_runtime(self, device, dtype, amp_enabled: bool, had_fast: bool) -> None:
+        """Undo the scoped CPU fallback of `_infer`, best effort.
+
+        A model that no longer fits `device` after the CPU retry stays demoted: raising out of a
+        request that already succeeded would trade a silent slowdown for a crash, the worse
+        failure of the two.
+        """
+        try:
+            self.model.to(device)
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+            # The move can fail partway through, leaving parameters split between devices, so
+            # finish the demotion before giving up: every later call must find one device,
+            # not a mix of both.
+            self.model.to(torch.device("cpu"))
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("Warning: could not move the model back to %s after the CPU retry (%s); "
+                  "staying on CPU." % (device, e))
+            return
+        self.device, self.dtype, self.amp_enabled = device, dtype, amp_enabled
+        if had_fast:
+            self.accelerate()
+
     @staticmethod
     def _check_question(qid: str, qdef: Any) -> None:
         """Reject a question that cannot be answered, naming it and what to fix.
@@ -657,19 +685,32 @@ class Agent(HookRegistry):
             return run()
         except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
             low = str(e).lower()
-            if self.device.type != "cpu" and ("memory" in low or "cuda" in low):
-                print("Warning: GPU memory exceeded during inference. Falling back to CPU...")
-                # FastLaya keeps copied CUDA weights and replaces model.forward.  Move
-                # the model first without that replacement, or the retry would still
-                # execute on the failed CUDA fast path.
-                self.deaccelerate()
-                self.device = torch.device("cpu")
-                self.dtype = torch.float32
-                self.amp_enabled = False
-                self.model.to(self.device)
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                return run()
+            # An OOM is `torch.cuda.OutOfMemoryError` or says so in its message. The bare
+            # "cuda" substring used to be accepted too, so any CUDA-shaped RuntimeError (a
+            # shape, assert or kernel error) silently and permanently demoted the agent.
+            if self.device.type != "cpu" and (isinstance(e, torch.cuda.OutOfMemoryError) or "memory" in low):
+                print("Warning: GPU memory exceeded during inference. Retrying this request on CPU...")
+                # Scoped, not permanent: the demotion used to rewrite device/dtype/amp and move
+                # the model for the life of the process, so one oversized request left every
+                # later call ~10-15x slower on CPU. Demote under the lock, answer this request
+                # on CPU, then put the runtime back the way it was.
+                with _OOM_FALLBACK_LOCK:
+                    held_device, held_dtype, held_amp = self.device, self.dtype, self.amp_enabled
+                    had_fast = self._fast is not None
+                    # FastLaya keeps copied CUDA weights and replaces model.forward.  Move
+                    # the model first without that replacement, or the retry would still
+                    # execute on the failed CUDA fast path.
+                    self.deaccelerate()
+                    self.device = torch.device("cpu")
+                    self.dtype = torch.float32
+                    self.amp_enabled = False
+                    self.model.to(self.device)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    try:
+                        return run()
+                    finally:
+                        self._restore_runtime(held_device, held_dtype, held_amp, had_fast)
             if use_amp and self.device.type in ("mps", "cpu"):
                 # Not every MPS/CPU build implements autocast for every op. Drop to full
                 # precision once rather than failing the request.
