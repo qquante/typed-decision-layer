@@ -194,6 +194,34 @@ from laya.onnx_agent import ONNXAgent  # noqa: E402
 check("method/ONNXAgent.decide", callable(getattr(ONNXAgent, "decide", None)), True)
 
 
+# --------------------------------------------------------------- nullable via anyOf (pydantic v2)
+# Pydantic v2 renders Optional[X] as {"anyOf": [<X>, {"type": "null"}]}, the same nullable intent
+# as the list form type:["string","null"]. Both must map to the underlying field, not raise.
+NULLABLE = {
+    "type": "object",
+    "properties": {
+        "dept": {"anyOf": [{"type": "string", "enum": ["billing", "sales"]}, {"type": "null"}],
+                 "description": "Which team?"},
+        "score": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2}, {"type": "null"}]},
+        "flag": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+    },
+}
+nq = questions_from_json_schema(NULLABLE)
+check("nullable/anyOf enum is a choice", nq["dept"]["type"], "choice")
+check("nullable/anyOf carries the outer description", nq["dept"]["instructions"], "Which team?")
+check("nullable/anyOf bounded integer is a score", nq["score"]["type"], "score")
+check("nullable/anyOf boolean is a noul", nq["flag"]["type"], "noul")
+# oneOf is accepted the same way
+check("nullable/oneOf enum is a choice",
+      questions_from_json_schema(
+          {"type": "object", "properties": {"a": {"oneOf": [{"enum": ["x", "y"]}, {"type": "null"}]}}}
+      )["a"]["type"], "choice")
+# a union of two real types stays ambiguous and is rejected
+check_raises("nullable/two real branches rejected", SchemaError,
+             _bad({"type": "object",
+                   "properties": {"a": {"anyOf": [{"type": "boolean"}, {"type": "integer"}]}}}))
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL", f)
