@@ -166,6 +166,59 @@ check("state_text/none", state_text(None), "")
 check("state_text/keys ignored",
       analyse({"subject": "नमस्ते", "body": "ग्राहक से दो बार शुल्क लिया गया"})["is_english"], False)
 
+# --------------------------------------------------------------------- dict-state language (#384)
+# The same German sentence must route the same way as a string and as a dict value.
+# A mapping that is not a builtin dict, a bytes value, and English sibling fields used to
+# hide that value: detection then reported language_undecided (or English) and the router
+# fell through to the English checkpoint.
+_DE = "Mein Konto wurde zweimal belastet"
+_r_de = Router()
+_de_str = _r_de.route(_DE, {})
+_de_dict = _r_de.route({"message": _DE}, {})
+check("route/dict german matches string", _de_dict.model, _de_str.model)
+check("route/dict german is multilingual", _de_dict.model, "multilingual")
+check("route/dict german names de", _de_dict["detection"]["language"], "de")
+check("route/dict german is not undecided", _de_dict["detection"]["language_undecided"], False)
+check("analyse/dict german matches string", analyse({"message": _DE})["language"], analyse(_DE)["language"])
+# English notes must not outvote the message, and a long note must not push it out of the window.
+_de_ticket = {
+    "ticket_id": "TCK-88213",
+    "channel": "web chat",
+    "agent_notes": "Please check the shipping status and refund the customer if the charge was duplicated.",
+    "message": _DE,
+}
+check("route/dict german beside english notes", _r_de.route(_de_ticket, {}).model, "multilingual")
+check("route/dict german beside english notes is not undecided",
+      _r_de.route(_de_ticket, {})["detection"]["language_undecided"], False)
+_de_long = {
+    "agent_notes": "Please check the shipping status and tell the customer about the refund. " * 80,
+    "message": _DE,
+}
+check("route/dict german after long english note", _r_de.route(_de_long, {}).model, "multilingual")
+check("route/dict german after long english note names de",
+      _r_de.route(_de_long, {})["detection"]["language"], "de")
+from collections import UserDict  # noqa: E402
+from types import MappingProxyType  # noqa: E402
+check("route/userdict german", _r_de.route(UserDict({"message": _DE}), {}).model, "multilingual")
+check("route/userdict german is not undecided",
+      _r_de.route(UserDict({"message": _DE}), {})["detection"]["language_undecided"], False)
+check("route/mappingproxy german",
+      _r_de.route(MappingProxyType({"message": _DE}), {}).model, "multilingual")
+check("route/bytes german value",
+      _r_de.route({"message": _DE.encode("utf-8")}, {}).model, "multilingual")
+# A name beside an English request is not a second message.
+check("route/dict cyrillic name stays english",
+      _r_de.route({"name": "Антон Павлович Чехов",
+                   "body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+check("route/dict jose stays english",
+      _r_de.route({"name": "José",
+                   "body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+check("route/dict english body stays english",
+      _r_de.route({"body": "Please refund the duplicate charge on invoice 4411 today."}, {}).model,
+      "english")
+
 
 # --------------------------------------------------------------------- workflow signatures
 check("profile/armenian", analyse("Հայերեն")["script_profile"], {"armenian": 1.0})
@@ -577,6 +630,40 @@ for text in ["turn off smart lamp in den", "im so sorry, am an hour late, stuck 
 # German words that Spanish (`es`) or French (`du`) also claim would stop naming those languages
 check("latin_lang/spanish es stays evidence", guess_latin_language("que hora es en australia"), "es")
 check("latin_lang/french du stays evidence", guess_latin_language("baisse le volume du haut-parleur"), "fr")
+
+# ------------------------------------------------------------------ accented loanwords in English (#337)
+# The diacritic rate is measured over every character, so one `é` in a short English sentence
+# clears the 0.02 floor and used to veto the English resolution outright: plain English with a
+# loanword or foreign name (`café`, `résumé`, `José`, `Zürich`) went to the checkpoint the
+# README says collapses on English-heavy Latin text. English wins the veto back only through the
+# word rescue: at least two distinct function words no other list holds, and at most one word
+# carrying a non-English letter.
+for text in ["Please send me the café menu today please",
+             "Could you email me your résumé before the meeting",
+             "Send the invoice to José before Friday",
+             "We visited Zürich last summer and loved it"]:
+    check("latin_lang/loanword english stays english " + text, guess_latin_language(text), "en")
+    check("route/loanword english stays english " + text, _r_lat.route(text).model, "english")
+# Genuinely non-English accented text keeps its multilingual routing: a German sentence with
+# umlauts and no English function word is not rescued.
+check("latin_lang/accented german stays non-english",
+      is_english("Grüße aus Köln, wir melden uns wegen der Rechnung"), False)
+check("route/accented german stays multilingual",
+      _r_lat.route("Grüße aus Köln, wir melden uns wegen der Rechnung").model, "multilingual")
+# Danish and Swedish hold no list here, and their accented function-word sentences pick up just
+# one or two English-shaped words (`i`, `at`, `for`, `have`), which is not the two-distinct-word
+# English the rescue requires -- a rescue that counted them sent plain Danish to the English
+# checkpoint on the MASSIVE splits.
+for text in ["sluk lyset i soveværelset",                          # da
+             "kan jeg få en refundering for det dobbelte beløb",   # da
+             "stäng av ljuset i sovrummet",                         # sv
+             "jag vill ha en återbetalning för den dubbla avgiften"]:  # sv
+    check("latin_lang/nordic accented stays non-english " + text, is_english(text), False)
+    check("route/nordic accented stays multilingual " + text, _r_lat.route(text).model, "multilingual")
+# Two non-English-letter words is a running non-English vocabulary, not one loanword: the rescue
+# does not fire even with English function words present.
+check("latin_lang/two diacritic words are not one loanword",
+      is_english("The naïve façade needs a fresh coat of paint"), False)
 
 
 # --------------------------------------------------------------------- temperature clamp (#35)

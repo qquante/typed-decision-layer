@@ -6,6 +6,7 @@ Everything here is pure Python: importing `laya` must not start pulling torch.
 """
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 import uuid
@@ -174,6 +175,7 @@ def normalise_hooks(
 
 _DEFAULT_HOOKS: List[Any] = []
 _DEFAULT_HOOKS_LOCK = threading.Lock()
+_SKIP_DEFAULTS = contextvars.ContextVar("laya_skip_default_hooks", default=False)
 
 
 def default_hooks() -> List[Any]:
@@ -212,7 +214,8 @@ def compose_hooks(installed, hooks=None, on_predict_start=None, on_predict_end=N
 
     Reads the process-wide defaults at call time, so hooks set after construction still apply.
     """
-    return default_hooks() + list(installed) + normalise_hooks(hooks, on_predict_start, on_predict_end)
+    defaults = [] if _SKIP_DEFAULTS.get() else default_hooks()
+    return defaults + list(installed) + normalise_hooks(hooks, on_predict_start, on_predict_end)
 
 
 class HookRegistry:
