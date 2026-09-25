@@ -105,9 +105,17 @@ def _resolve_port() -> int:
 
 
 def _check_request_limits(state: Any, questions: Any) -> None:
-    """Reject oversized inference requests before tokenization (413)."""
+    """Reject absent or oversized inference requests before tokenization (400/413)."""
     from fastapi import HTTPException
 
+    # `serialize_state(None)` is `json.dumps(None)` == the four characters `null`, so a body with
+    # no `state` key, or `"state": null`, was answered as a decision about the literal text
+    # "null" -- HTTP 200, and at ~0.94 confidence here, byte-identical to sending `"state":
+    # "null"`. Nothing downstream can tell that apart from a real string, so the check has to
+    # happen before serialization. The repo's other two surfaces already require a state:
+    # examples/server.py declares it as a required field and mcp/tools.py rejects an empty one.
+    if state is None:
+        raise HTTPException(status_code=400, detail="'state' is required")
     if not isinstance(questions, dict):
         raise HTTPException(status_code=400, detail="'questions' must be an object")
     if len(questions) > MAX_QUESTIONS:

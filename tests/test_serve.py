@@ -402,3 +402,28 @@ def test_inference_timing_headers():
     assert "X-Inference-Time-Ms" in res.headers
     dur = float(res.headers["X-Inference-Time-Ms"])
     assert dur >= 0.0
+
+
+def test_a_missing_state_is_rejected_rather_than_answered():
+    """No `state` key, or `"state": null`, must be a 400 and not a decision about "null".
+
+    `serialize_state(None)` is `json.dumps(None)` -- the four characters `null` -- so the request
+    was answered as a decision about that literal text: HTTP 200, byte-identical to sending
+    `"state": "null"`, and at ~0.94 confidence on the real checkpoint. The caller gets an answer
+    about a state they never supplied, with nothing in the response to say so.
+    """
+    router = FakeRouter()
+    client = TestClient(create_app(router=router))
+    questions = {"dept": {"type": "choice", "instructions": "which?",
+                          "criteria": {"billing": "invoices"}}}
+
+    for body in ({"questions": questions},                      # no state key
+                 {"state": None, "questions": questions}):      # explicit null
+        res = client.post("/v1/systemone", json=body)
+        assert res.status_code == 400, (body, res.status_code, res.text)
+        assert "'state' is required" in res.text, res.text
+
+    # a state that IS a string is the caller's business, including the text "null" and ""
+    for state in ("null", "", "0"):
+        res = client.post("/v1/systemone", json={"state": state, "questions": questions})
+        assert res.status_code == 200, (state, res.status_code, res.text)
