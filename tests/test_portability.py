@@ -165,6 +165,17 @@ class _FailsOnce(torch.nn.Module):
         return logits, torch.tensor([[1.0, 0.0]])
 
 
+class _RestoreFails(_FailsOnce):
+    """OOMs once like _FailsOnce, but also refuses to move back to the accelerator afterwards,
+    so `_restore_runtime`'s `model.to(device)` fails and the agent must stay on CPU."""
+    def to(self, *args, **kwargs):
+        target = args[0] if args else kwargs.get("device")
+        dt = getattr(target, "type", None) or (target if isinstance(target, str) else None)
+        if dt == "mps":
+            raise RuntimeError("CUDA out of memory: model no longer fits after the retry")
+        return super().to(*args, **kwargs)
+
+
 def _bare_agent(model):
     agent = _agent.Agent.__new__(_agent.Agent)     # no weights: exercise system_one only
     agent.device = torch.device("mps")             # any non-CPU device enters the fallback branch
@@ -232,6 +243,19 @@ with mock.patch.object(torch.Tensor, "to", _to_that_ignores_mps):
     except Exception as e:  # noqa: BLE001
         FAIL.append("fallback/cuda-worded non-memory error raised %s instead of RuntimeError"
                     % type(e).__name__)
+
+    # restore fails: the model no longer fits the accelerator after the CPU retry, so it stays
+    # demoted rather than crashing a request that already succeeded
+    agent = _bare_agent(_RestoreFails("CUDA out of memory. Tried to allocate 2.00 GiB"))
+    try:
+        result = agent.predict({"body": "some state"}, QUESTIONS)
+        check("fallback/restore-failure still answers the request", result["answers"]["q"]["choice"], "a")
+        check("fallback/restore-failure stays on cpu", agent.device.type, "cpu")
+        check("fallback/restore-failure: later call runs on cpu without crashing",
+              agent.predict({"body": "another state"}, QUESTIONS)["answers"]["q"]["choice"], "a")
+        check("fallback/restore-failure: no extra forward beyond retry + later call", agent.model.calls, 3)
+    except Exception as e:  # noqa: BLE001
+        FAIL.append("fallback/restore-failure not survived: %s: %s" % (type(e).__name__, e))
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))

@@ -489,6 +489,12 @@ class Agent(HookRegistry):
         try:
             self.model.to(device)
         except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+            # The move can fail partway through, leaving parameters split between devices, so
+            # finish the demotion before giving up: every later call must find one device,
+            # not a mix of both.
+            self.model.to(torch.device("cpu"))
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             print("Warning: could not move the model back to %s after the CPU retry (%s); "
                   "staying on CPU." % (device, e))
             return
