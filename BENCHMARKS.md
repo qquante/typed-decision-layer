@@ -304,6 +304,34 @@ fast path is (0.0446 against 0.0455), so this table does not show that the fast 
 Dataset accuracy / ECE (AG News, dair-ai emotion, 1,000 samples each) are identical within noise; see
 `benchmarks/bench_fast.py --eval 1000`.
 
+### fp16
+
+The fast path runs in the agent's autocast dtype when `accelerate()` is called, so an agent set to fp16
+(`agent.dtype = torch.float16`, or the CUDA autocast override proposed for #443) gets fp16 kernels and fp16
+weights; the residual stream and every accumulation stay fp32 in both dtypes. Same fixed set,
+`parity_fast.py --dtype fp16 | bf16`, RTX 4070 Ti SUPER; per-option probabilities in
+`benchmarks/results/parity_*_rtx4070.json` (the bf16 columns are the table above, plus a bf16 run of
+`laya-typed-decisions`):
+
+| checkpoint | type | n | max \|p_fast - p_fp32\| bf16 | max \|p_fast - p_fp32\| fp16 | argmax fast = fp32, bf16 | fp16 |
+|---|---|---|---|---|---|---|
+| laya | choice | 48 | 0.022 | **0.004** | 47/48 | 48/48 |
+| laya | noul | 180 | 0.043 | **0.005** | 180/180 | 180/180 |
+| laya | score | 60 | 0.011 | **0.003** | 60/60 | 60/60 |
+| laya-multilingual | choice | 48 | 0.015 | **0.002** | 47/48 | 48/48 |
+| laya-multilingual | noul | 180 | 0.045 | **0.009** | 179/180 | 180/180 |
+| laya-multilingual | score | 60 | 0.009 | **0.001** | 59/60 | 60/60 |
+| laya-typed-decisions | choice | 48 | 0.019 | **0.002** | 47/48 | 47/48 |
+| laya-typed-decisions | noul | 180 | 0.023 | **0.005** | 180/180 | 180/180 |
+| laya-typed-decisions | score | 60 | 0.009 | **0.001** | 60/60 | 60/60 |
+
+In fp16 the fast path is 3-10x closer to fp32 than in bf16 and agrees with the fp16 stock path on every argmax
+(864/864; the most it moves a probability against fp16 stock is 0.009). The one fp16 disagreement with fp32 is a
+`laya-typed-decisions` choice question whose top two options are 0.001 apart in fp32; the fp16 stock path flips it too.
+`agent.predict()` latency shows no consistent difference between the dtypes: on every case of the table below, on
+both checkpoints, fp16 and bf16 are within 10% of each other in both directions (single runs of 50 iterations), for
+stock and fast alike.
+
 ### Latency, `agent.predict()` end to end (ms, incl. tokenization)
 
 | checkpoint | case | stock | fast | speedup |
