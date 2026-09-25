@@ -52,6 +52,7 @@ class ONNXAgent(HookRegistry):
         hooks_raise: bool = True,
         hooks_concurrent: bool = True,
         hooks_timeout: Optional[float] = None,
+        lang_temperatures: Optional[Dict[str, Dict[str, Any]]] = None,
     ):
         """Load a Laya agent backed by ONNX Runtime.
 
@@ -73,6 +74,10 @@ class ONNXAgent(HookRegistry):
             hooks_raise: When False, a failing hook warns and inference continues.
             hooks_concurrent: When False, hooks are serialised with a lock.
             hooks_timeout: Bounds each hook call in seconds; None means no limit.
+            lang_temperatures: Optional per-language temperature overrides, keyed by language
+                               code, each `{"temperature": [3 floats], "temperature_by_options": {}}`.
+                               Applied when a `lang=` is passed to `system_one`/`predict`, mirroring
+                               the PyTorch `Agent`; a cross-backend swap otherwise loses calibration.
         """
         self.hooks = normalise_hooks(hooks, on_predict_start, on_predict_end)
         self.hooks_raise = bool(hooks_raise)
@@ -169,6 +174,19 @@ class ONNXAgent(HookRegistry):
         self.temperature = [clamp_temperature(t) for t in self.temperature_raw]
         self.temperature_by_options = {k: clamp_temperature(v)
                                        for k, v in self.temperature_by_options_raw.items()}
+        # Per-language temperature overrides, built exactly as the PyTorch Agent does so a caller
+        # can hand the same `lang_temperatures` to either backend and read the same confidence.
+        self.lang_temperatures = {}
+        for l, lcfg in (lang_temperatures or {}).items():
+            norm_l = l.split("-")[0].lower()
+            t_raw = lcfg.get("temperature", self.temperature_raw)
+            if len(t_raw) != 3:
+                raise ValueError("Language override %r temperature must be a list of 3 floats" % l)
+            tbo_raw = lcfg.get("temperature_by_options", {})
+            self.lang_temperatures[norm_l] = {
+                "temperature": [clamp_temperature(t) for t in t_raw],
+                "temperature_by_options": {k: clamp_temperature(v) for k, v in tbo_raw.items()},
+            }
         entries = [(k, v, self.temperature_by_options[k]) for k, v in self.temperature_by_options_raw.items()]
         entries += [("temperature[%d]" % i, t, self.temperature[i]) for i, t in enumerate(self.temperature_raw)]
         rejected = []
@@ -206,12 +224,17 @@ class ONNXAgent(HookRegistry):
         return q
 
     def system_one(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
+                   lang: Optional[str] = None,
                    hooks=None, on_predict_start=None, on_predict_end=None,
                    hooks_raise: Optional[bool] = None,
                    hooks_timeout: Optional[float] = None,
                    max_len: Optional[int] = None,
                    head_max_len: Optional[int] = None) -> Dict[str, Any]:
-        """Evaluate typed questions, running any opt-in hooks around the inference."""
+        """Evaluate typed questions, running any opt-in hooks around the inference.
+
+        `lang` selects a per-language temperature override (see `lang_temperatures`), matching the
+        PyTorch `Agent.system_one` signature so either backend is a drop-in for the other.
+        """
         active = compose_hooks(self.hooks, hooks, on_predict_start, on_predict_end)
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
         timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
@@ -225,7 +248,7 @@ class ONNXAgent(HookRegistry):
                     overrides["max_len"] = ctx.max_len
                 if ctx.head_max_len is not None:
                     overrides["head_max_len"] = ctx.head_max_len
-                ctx.results = [self._infer(ctx.states[0], ctx.questions, **overrides)]
+                ctx.results = [self._infer(ctx.states[0], ctx.questions, lang=lang, **overrides)]
         except BaseException as exc:
             ctx.error = exc
             try:
@@ -247,7 +270,8 @@ class ONNXAgent(HookRegistry):
         return ctx.results[0]
 
     def _infer(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
-               max_len: Optional[int] = None, head_max_len: Optional[int] = None) -> Dict[str, Any]:
+               max_len: Optional[int] = None, head_max_len: Optional[int] = None,
+               lang: Optional[str] = None) -> Dict[str, Any]:
         from .agent import Agent as _Agent
 
         ids = list(questions.keys())
@@ -311,6 +335,9 @@ class ONNXAgent(HookRegistry):
             k = len(items[r]["markers"])
             qt = QTYPES[q["t"]]
             t_scale = self.temperature_by_options.get(temp_bucket(qt, k), self.temperature[qt])
+            if lang and lang.split("-")[0].lower() in self.lang_temperatures:
+                l_cfg = self.lang_temperatures[lang.split("-")[0].lower()]
+                t_scale = l_cfg["temperature_by_options"].get(temp_bucket(qt, k), l_cfg["temperature"][qt])
             z = logits[r, :k] / t_scale
             p = np.exp(z - z.max())
             p = p / p.sum()

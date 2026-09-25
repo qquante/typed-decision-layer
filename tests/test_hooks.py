@@ -866,8 +866,8 @@ from laya.onnx_agent import ONNXAgent  # noqa: E402
 
 o = ONNXAgent.__new__(ONNXAgent)
 o.model_id = "convaiinnovations/laya-onnx"
-o._infer = lambda state, questions: {"model": "onnx", "answers": {},
-                                     "usage": {"input_tokens": 0, "output_tokens": 0}}
+o._infer = lambda state, questions, **kwargs: {"model": "onnx", "answers": {},
+                                               "usage": {"input_tokens": 0, "output_tokens": 0}}
 onnx_seen = []
 onnx_models = []
 onnx_out = o.system_one("s", QUESTIONS,
@@ -880,7 +880,7 @@ check("onnx/context model is the agent model_id", onnx_models, ["convaiinnovatio
 o = ONNXAgent.__new__(ONNXAgent)
 
 
-def _never(*args):
+def _never(*args, **kwargs):
     raise AssertionError("inference should have been skipped")
 
 
