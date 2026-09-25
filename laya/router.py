@@ -36,6 +36,7 @@ from collections.abc import Sequence as SequenceABC
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from .hooks import HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks
+from .hooks import _SKIP_DEFAULTS
 from .lang import analyse
 
 # The hub repo bundles all three checkpoints; only the requested subfolder is downloaded.
@@ -137,8 +138,16 @@ def _question_schema(questions: Dict[str, Any]) -> str:
 
 # Subtags that mean "the English checkpoint can read this". Routing needs one bit -- is this
 # English Latin text, or something the English checkpoint cannot read -- not a language id, so
-# every other code resolves to the multilingual checkpoint.
+# every other code that names a language resolves to the multilingual checkpoint.
 _ENGLISH_SUBTAGS = ("en", "eng", "english")
+
+# Codes that are valid `$LANG` values but name no language, so they answer nothing about the
+# state. `C`, `POSIX` and `C.UTF-8` are what minimal images ship -- `C.UTF-8` is the default
+# `LANG` in the official Python image, which is where `laya-serve` runs -- and the ISO 639-2
+# special codes say the same thing in the standard's own vocabulary: `und` undetermined,
+# `zxx` no linguistic content, `mul` multiple languages. They abstain, which is what the blank
+# case below already does, rather than forcing the multilingual checkpoint on English text.
+_LANGUAGE_AGNOSTIC_CODES = ("c", "posix", "und", "zxx", "mul")
 
 
 def _english_from_code(value: Any) -> Optional[bool]:
@@ -146,7 +155,9 @@ def _english_from_code(value: Any) -> Optional[bool]:
 
     Accepts the forms a caller is likely to have to hand: `"en"`, `"EN"`, `"en-US"`, the
     POSIX `"en_US"` (which `$LANG` holds), and `"en_US.UTF-8"`. `None` here means "no usable
-    hint", which is what lets a language-identification model abstain.
+    hint", which is what lets a language-identification model abstain -- and it is also what a
+    code that names no language returns, so `LANG=C` falls through to detection instead of
+    pinning every request to one checkpoint.
     """
     if value is None:
         return None
@@ -155,7 +166,7 @@ def _english_from_code(value: Any) -> Optional[bool]:
         return None
     code = code.split(".", 1)[0]                       # en_US.UTF-8 -> en_US
     primary = code.replace("_", "-").split("-", 1)[0]  # en_US -> en
-    if not primary:
+    if not primary or primary in _LANGUAGE_AGNOSTIC_CODES:
         return None
     return primary in _ENGLISH_SUBTAGS
 
@@ -188,6 +199,11 @@ class Router(HookRegistry):
         r = Router(preload=True, device="cuda")
         r.preload(["english", "multilingual"])      # or just the two you serve
 
+    Hub revisions are opt-in. `revision` applies one commit to every model;
+    `revisions={"english": "...", "multilingual": "..."}` overrides that per model,
+    which is useful when standalone repositories were reviewed at different commits.
+    Without either, huggingface_hub's normal default and existing offline cache are used.
+
     Hooks are opt-in and run at the Router level: `on_route` sees the routing decision,
     `on_load` / `on_evict` see model lifecycle, and `on_predict_start` / `on_predict_end`
     wrap the whole route+infer call. See `laya.hooks`.
@@ -204,6 +220,8 @@ class Router(HookRegistry):
         models: Optional[Dict[str, str]] = None,
         device: Optional[str] = None,
         token: Optional[str] = None,
+        revision: Optional[str] = None,
+        revisions: Optional[Dict[str, Optional[str]]] = None,
         max_loaded: int = 2,
         default: str = "english",
         auto_task_detection: bool = False,
@@ -226,6 +244,13 @@ class Router(HookRegistry):
             self.models.update({normalise_name(k): v for k, v in models.items()})
         self.device = device
         self.token = token or os.environ.get("HF_TOKEN")
+        # Optional Hub revision (commit SHA/branch/tag) applied to every checkpoint load.
+        # `revisions` overrides it per normalized model name, for standalone repos whose
+        # reviewed commits differ.
+        self.revision = revision
+        self.revisions: Dict[str, Optional[str]] = {
+            normalise_name(k): v for k, v in (revisions or {}).items()
+        }
         self.max_loaded = max(1, int(max_loaded))
         self.default = normalise_name(default)
         self.auto_task_detection = bool(auto_task_detection)
@@ -257,7 +282,11 @@ class Router(HookRegistry):
                 return self._agents[key]
             from .agent import Agent
             repo, sub = _split(self.models[key])
-            agent = Agent(repo, device=self.device, token=self.token, subfolder=sub)
+            kwargs = {"device": self.device, "token": self.token, "subfolder": sub}
+            model_revision = self.revisions.get(key, self.revision)
+            if model_revision is not None:
+                kwargs["revision"] = model_revision
+            agent = Agent(repo, **kwargs)
             self._agents[key] = agent
             self._order.append(key)
             evicted = self._evict_locked()
@@ -362,6 +391,8 @@ class Router(HookRegistry):
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
             except Exception:
                 pass
         self._dispatch_lifecycle("on_evict", freed)
@@ -370,6 +401,12 @@ class Router(HookRegistry):
     def loaded(self) -> List[str]:
         with self._lock:
             return list(self._order)
+
+    @property
+    def loaded_revisions(self) -> Dict[str, Optional[str]]:
+        """Commit SHA each resident agent was loaded from (None for local paths)."""
+        with self._lock:
+            return {name: getattr(agent, "revision", None) for name, agent in self._agents.items()}
 
     def _resolve_hint(self, hint: Any, state: Union[str, dict, list, None]) -> Optional[bool]:
         """True/False for a hint about whether the English checkpoint can read `state`.
@@ -478,7 +515,10 @@ class Router(HookRegistry):
                 det["script"], 100 * float(det["non_latin_fraction"]))
         elif not det["is_english"]:
             key = "multilingual"
-            if det["language"]:
+            if det.get("mixed_segment"):
+                reason = ("Latin script, mostly English, but a line or field reads as %r (%r); "
+                          "the English checkpoint cannot read it" % (det["language"], det["mixed_segment"][:60]))
+            elif det["language"]:
                 reason = "Latin script but language looks like %r, not English" % det["language"]
             else:
                 # Unidentified Latin-script language: routed on the non-English letters alone,
@@ -547,6 +587,7 @@ class Router(HookRegistry):
                 if ctx.head_max_len is not None:
                     overrides["head_max_len"] = ctx.head_max_len
                 
+                skip = _SKIP_DEFAULTS.set(True)
                 try:
                     result = agent.system_one(ctx.states[0], ctx.questions, lang=effective_lang, **overrides)
                 except TypeError as e:
@@ -554,6 +595,8 @@ class Router(HookRegistry):
                         result = agent.system_one(ctx.states[0], ctx.questions, **overrides)
                     else:
                         raise
+                finally:
+                    _SKIP_DEFAULTS.reset(skip)
                 result["routing"] = dict(decision)
                 ctx.results = [result]
             else:
@@ -691,7 +734,12 @@ class Router(HookRegistry):
             groups.setdefault(decision["model"], []).append(i)
 
         results: List[Optional[Dict[str, Any]]] = [None] * len(requests)
-        active = list(self.hooks)
+        # `compose_hooks`, not `list(self.hooks)`: this is the composition `predict` uses at its
+        # own dispatch site, and it is what merges in `set_default_hooks`. Reading the instance
+        # list alone silently dropped every process-wide default from the batched path while
+        # keeping them on `predict`, so a default audit or metrics hook saw no Router-level event
+        # for a request that arrived through `predict_batch`.
+        active = compose_hooks(self.hooks)
         raise_errors = self.hooks_raise
 
         for model_name, indices in groups.items():
@@ -725,11 +773,24 @@ class Router(HookRegistry):
                     overrides = {key: value for key, value in (("max_len", ctx.max_len),
                                                                ("head_max_len", ctx.head_max_len))
                                  if value is not None}
+                    # `predict` forwards the language of the request so the agent can apply its
+                    # per-language temperatures; the batched path forwarded only the token
+                    # budgets, so the same request scored differently depending on the entry
+                    # point. Only computed for an agent that actually carries them: `lang` is
+                    # otherwise unused, and adding it to the group key would split a group that
+                    # shares one forward pass today.
+                    lang_key = None
+                    if getattr(agent, "lang_temperatures", None):
+                        lang_key = requests[i].get("lang")
+                        if lang_key is None:
+                            detection = decisions[i].get("detection") or {}
+                            lang_key = detection.get("language")
                     # Order-sensitive at every nesting level (#166): options are positional, so two
                     # equal schemas with different key orders must not share a group.
                     schema = _question_schema(ctx.questions)
                     for group in question_groups:
-                        if group["schema"] == schema and group["overrides"] == overrides:
+                        if (group["schema"] == schema and group["overrides"] == overrides
+                                and group["lang"] == lang_key):
                             group["items"].append((i, ctx))
                             break
                     else:
@@ -737,17 +798,38 @@ class Router(HookRegistry):
                             "questions": ctx.questions,
                             "schema": schema,
                             "overrides": overrides,
+                            "lang": lang_key,
                             "items": [(i, ctx)],
                         })
 
                 for group in question_groups:
                     items = group["items"]
-                    batch_results = agent.predict_batch(
-                        [ctx.states[0] for _, ctx in items],
-                        group["questions"],
-                        batch_size=batch_size,
-                        **group["overrides"],
-                    )
+                    batch_kwargs = dict(group["overrides"])
+                    if group["lang"] is not None:
+                        batch_kwargs["lang"] = group["lang"]
+                    skip = _SKIP_DEFAULTS.set(True)
+                    try:
+                        batch_results = agent.predict_batch(
+                            [ctx.states[0] for _, ctx in items],
+                            group["questions"],
+                            batch_size=batch_size,
+                            **batch_kwargs,
+                        )
+                    except TypeError as e:
+                        # Same tolerance `predict` has for an Agent-like object whose
+                        # `predict_batch` predates the `lang` argument.
+                        if batch_kwargs.get("lang") is not None and "unexpected keyword argument 'lang'" in str(e):
+                            batch_kwargs.pop("lang")
+                            batch_results = agent.predict_batch(
+                                [ctx.states[0] for _, ctx in items],
+                                group["questions"],
+                                batch_size=batch_size,
+                                **batch_kwargs,
+                            )
+                        else:
+                            raise
+                    finally:
+                        _SKIP_DEFAULTS.reset(skip)
 
                     if len(batch_results) != len(items):
                         raise RuntimeError(
