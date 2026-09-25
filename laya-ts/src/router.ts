@@ -173,6 +173,7 @@ export class Router extends HookRegistry {
   loader: AgentLoader | null;
   _agents: Map<string, unknown> = new Map();
   _order: string[] = []; // least-recently-used first
+  private readonly _loading = new Map<string, Promise<unknown>>();
 
   constructor(opts: RouterOptions = {}) {
     super();
@@ -215,44 +216,55 @@ export class Router extends HookRegistry {
       this._touch(key);
       return this._agents.get(key);
     }
-    let agent: unknown;
-    if (this.loader) {
-      agent = await this.loader(key, this.models[key]);
-    } else {
-      const { Agent } = await import("./agent.js");
-      const spec = this.models[key];
-      const revision = Object.prototype.hasOwnProperty.call(this.revisions, key)
-        ? this.revisions[key]
-        : this.revision;
-      const opts: Record<string, unknown> = {
-        subfolder: spec.subfolder,
-        device: this.device ?? undefined,
-        token: this.token ?? undefined,
-      };
-      if (revision) opts.revision = revision;
-      agent = await (Agent as unknown as {
-        load(repo: string, opts?: Record<string, unknown>): Promise<unknown>;
-      }).load(spec.repo, opts);
-    }
-    this._agents.set(key, agent);
-    this._order.push(key);
-    const evicted = this._evict();
-    // Lifecycle hooks fire after the maps settle, so a hook can safely call the Router.
-    for (const victim of evicted) {
+    const loading = this._loading.get(key);
+    if (loading) return loading;
+    // Start in a microtask so even a synchronous loader sees its in-flight entry.
+    const pending = Promise.resolve().then(async () => {
+      let agent: unknown;
+      if (this.loader) {
+        agent = await this.loader(key, this.models[key]);
+      } else {
+        const { Agent } = await import("./agent.js");
+        const spec = this.models[key];
+        const revision = Object.prototype.hasOwnProperty.call(this.revisions, key)
+          ? this.revisions[key]
+          : this.revision;
+        const opts: Record<string, unknown> = {
+          subfolder: spec.subfolder,
+          device: this.device ?? undefined,
+          token: this.token ?? undefined,
+        };
+        if (revision) opts.revision = revision;
+        agent = await (Agent as unknown as {
+          load(repo: string, opts?: Record<string, unknown>): Promise<unknown>;
+        }).load(spec.repo, opts);
+      }
+      this._agents.set(key, agent);
+      this._order.push(key);
+      const evicted = this._evict();
+      // Lifecycle hooks fire after the maps settle, so a hook can safely call the Router.
+      for (const victim of evicted) {
+        dispatch(
+          composeHooks(this.hooks),
+          "onEvict",
+          new PredictContext({ states: [], questions: {}, model: victim, router: this }),
+          { raiseErrors: this.hooksRaise },
+        );
+      }
       dispatch(
         composeHooks(this.hooks),
-        "onEvict",
-        new PredictContext({ states: [], questions: {}, model: victim, router: this }),
+        "onLoad",
+        new PredictContext({ states: [], questions: {}, model: key, agent, router: this }),
         { raiseErrors: this.hooksRaise },
       );
+      return agent;
+    });
+    this._loading.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      this._loading.delete(key);
     }
-    dispatch(
-      composeHooks(this.hooks),
-      "onLoad",
-      new PredictContext({ states: [], questions: {}, model: key, agent, router: this }),
-      { raiseErrors: this.hooksRaise },
-    );
-    return agent;
   }
 
   _touch(key: string): void {
