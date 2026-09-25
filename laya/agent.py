@@ -204,6 +204,18 @@ def _mps_amp_min_rows() -> int:
         return MPS_AMP_MIN_ROWS_DEFAULT
 
 
+def _cuda_amp_dtype(checkpoint_default: Optional[str]) -> torch.dtype:
+    """Autocast dtype on CUDA at compute capability >= 8: the checkpoint's `amp_dtype` (bf16 for the
+    shipped checkpoints), or LAYA_CUDA_AMP=fp16|bf16 when set. fp16 stays 2-10x closer to the fp32
+    forward than bf16 on every shipped checkpoint at the same speed; anything else is ignored."""
+    raw = os.environ.get("LAYA_CUDA_AMP", "").lower()
+    if raw in ("fp16", "float16"):
+        return torch.float16
+    if raw in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    return amp_dtype(checkpoint_default)
+
+
 class Agent(HookRegistry):
     """System 1 decision model runtime: fast, non-autoregressive, calibrated decisions."""
 
@@ -413,8 +425,9 @@ class Agent(HookRegistry):
                 % (TEMP_MIN, TEMP_MAX, ", ".join(rejected)),
                 RuntimeWarning, stacklevel=2)
         # Autocast policy. CUDA, MPS and XPU all support fp16/bf16 autocast and the shipped
-        # checkpoints are trained in reduced precision. CPU bf16 is only a win on hardware with
-        # native BF16, so it stays opt-in via LAYA_CPU_AMP=bf16. MPS fp16 is slower than fp32 on
+        # checkpoints are trained in reduced precision; on CUDA the checkpoint's `amp_dtype`
+        # (bf16) is the default and LAYA_CUDA_AMP=fp16|bf16 overrides it. CPU bf16 is only a win
+        # on hardware with native BF16, so it stays opt-in via LAYA_CPU_AMP=bf16. MPS fp16 is slower than fp32 on
         # a single small row (autocast overhead dominates) and only wins once the batch has
         # several rows, so it is gated per call by `mps_amp_min_rows` (default 5, override with
         # LAYA_MPS_AMP_MIN_ROWS) rather than enabled unconditionally. XPU autocast supports
@@ -429,7 +442,7 @@ class Agent(HookRegistry):
             if torch.cuda.get_device_capability(self.device)[0] < 8:
                 self.dtype = torch.float16
             else:
-                self.dtype = amp_dtype(self.cfg.get("amp_dtype", "fp16"))
+                self.dtype = _cuda_amp_dtype(self.cfg.get("amp_dtype", "fp16"))
         elif self.device.type == "mps":
             self.amp_enabled = True
             self.dtype = torch.float16
