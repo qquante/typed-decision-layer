@@ -22,6 +22,26 @@ describe("common parity", () => {
   it("serializes dict state as JSON", () => {
     expect(serializeState({ body: "x" })).toBe('{"body": "x"}');
   });
+  it("formats non-integer numbers like Python's float repr", () => {
+    // Expected strings are Python's json.dumps({"x": v}, ensure_ascii=False). Python switches
+    // to exponent notation below 1e-4 and pads the exponent to two digits; JavaScript's
+    // Number#toString switches only below 1e-6 and never pads, so the model read other tokens.
+    const cases: [number, string][] = [
+      [0.5, '{"x": 0.5}'],
+      [0.0001, '{"x": 0.0001}'],
+      [0.00005, '{"x": 5e-05}'],
+      [1.25e-5, '{"x": 1.25e-05}'],
+      [3e-7, '{"x": 3e-07}'],
+      [-2.5e-8, '{"x": -2.5e-08}'],
+      [1.5e-10, '{"x": 1.5e-10}'],
+      [5e-324, '{"x": 5e-324}'],
+    ];
+    for (const [v, want] of cases) expect(serializeState({ x: v })).toBe(want);
+    expect(renderOptions({ t: "score", ins: "x", crit: [0.00005] })).toEqual(["level 0: 5e-05"]);
+    // an integer-valued number reads as a Python int, which keeps plain digits
+    expect(serializeState({ n: 49 })).toBe('{"n": 49}');
+    expect(serializeState({ n: 1e16 })).toBe('{"n": 10000000000000000}');
+  });
   it("truncateLeft keeps tail of state (py parity)", () => {
     const tok = {
       clsId: 101, sepId: 102, maskId: 103, maskToken: "[MASK]",
