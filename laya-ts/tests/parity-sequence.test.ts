@@ -1,6 +1,7 @@
 // laya-ts/tests/parity-sequence.test.ts
 import { describe, expect, it } from "vitest";
-import { renderOptions, serializeState, buildSequence, collateItems } from "../src/common.js";
+import { renderOptions, serializeState, buildSequence, collateItems, type InternalQ } from "../src/common.js";
+import type { TokenizerLike } from "../src/tokenizer.js";
 describe("common parity", () => {
   it("renders choice with JSON criteria", () => {
     expect(renderOptions({ t: "choice", ins: "x", crit: { a: "yes", b: null } }))
@@ -36,6 +37,30 @@ describe("common parity", () => {
     // room=3: head keeps [1000,1001,1002], tail keeps [1017,1018,1019]
     expect(a.ids.slice(12, 15)).toEqual([1000, 1001, 1002]);
     expect(b.ids.slice(12, 15)).toEqual([1017, 1018, 1019]);
+  });
+  // With no room left for the state, `slice(-0)` kept all of it: the closing [SEP] was replaced by the
+  // *first* state token, i.e. the wrong end of the state and an unterminated sequence.
+  it.each<[number, string[]]>([
+    [0, []],
+    [2, ["two", "three"]],
+    [4, ["one", "two", "three"]],
+    [10, ["one", "two", "three"]],
+  ])("truncate_left/room=%d keeps the tail", (room, kept) => {
+    // same stub as Python's _SeqTok: one token per word, ids assigned in first-seen order
+    const vocab = new Map<string, number>();
+    const tok: TokenizerLike = {
+      clsId: 2, sepId: 3, maskId: 1, padId: 0, maskToken: "[MASK]",
+      encode(s: string): number[] {
+        return s.split(/\s+/).filter(Boolean).map((w) => {
+          if (!vocab.has(w)) vocab.set(w, 100 + vocab.size);
+          return vocab.get(w)!;
+        });
+      },
+    };
+    const q: InternalQ = { t: "noul", ins: "Is it urgent?", crit: null };
+    const full = buildSequence(tok, "", q, 1e6, 192).ids.length;     // prompt + closing [SEP], no state
+    const { ids } = buildSequence(tok, "one two three", q, full + room, 192, undefined, true);
+    expect(ids.slice(full - 1)).toEqual([...kept.map((w) => vocab.get(w)!), tok.sepId]);
   });
   it("optionOrder reorders option blocks (py parity)", () => {
     const tok = {
