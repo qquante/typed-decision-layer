@@ -486,9 +486,9 @@ check("latin_lang/french du stays evidence", guess_latin_language("baisse le vol
 # The diacritic rate is measured over every character, so one `é` in a short English sentence
 # clears the 0.02 floor and used to veto the English resolution outright: plain English with a
 # loanword or foreign name (`café`, `résumé`, `José`, `Zürich`) went to the checkpoint the
-# README says collapses on English-heavy Latin text. English function words now outvote a
-# marginal rate; a rate well above the floor (several diacritics and no English evidence) still
-# vetoes.
+# README says collapses on English-heavy Latin text. English wins the veto back only through the
+# word rescue: at least two distinct function words no other list holds, and at most one word
+# carrying a non-English letter.
 for text in ["Please send me the café menu today please",
              "Could you email me your résumé before the meeting",
              "Send the invoice to José before Friday",
@@ -501,6 +501,20 @@ check("latin_lang/accented german stays non-english",
       is_english("Grüße aus Köln, wir melden uns wegen der Rechnung"), False)
 check("route/accented german stays multilingual",
       _r_lat.route("Grüße aus Köln, wir melden uns wegen der Rechnung").model, "multilingual")
+# Danish and Swedish hold no list here, and their accented function-word sentences pick up just
+# one or two English-shaped words (`i`, `at`, `for`, `have`), which is not the two-distinct-word
+# English the rescue requires -- a rescue that counted them sent plain Danish to the English
+# checkpoint on the MASSIVE splits.
+for text in ["sluk lyset i soveværelset",                          # da
+             "kan jeg få en refundering for det dobbelte beløb",   # da
+             "stäng av ljuset i sovrummet",                         # sv
+             "jag vill ha en återbetalning för den dubbla avgiften"]:  # sv
+    check("latin_lang/nordic accented stays non-english " + text, is_english(text), False)
+    check("route/nordic accented stays multilingual " + text, _r_lat.route(text).model, "multilingual")
+# Two non-English-letter words is a running non-English vocabulary, not one loanword: the rescue
+# does not fire even with English function words present.
+check("latin_lang/two diacritic words are not one loanword",
+      is_english("The naïve façade needs a fresh coat of paint"), False)
 
 
 # --------------------------------------------------------------------- temperature clamp (#35)

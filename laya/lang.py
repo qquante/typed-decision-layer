@@ -172,6 +172,9 @@ _NON_EN_DIACRITICS = set(
 # way), though it still counts toward the total of a language that also matched a word of its own.
 _SHARED_WORDS = {w for w in {word for words in _STOP.values() for word in words}
                  if sum(w in words for words in _STOP.values()) > 1}
+# English function words no other list holds (`in`, `is`, `as`, `was` are shared with German,
+# Dutch and Portuguese). They alone carry the English rescue of `latin_profile`.
+_EN_ONLY_WORDS = _STOP["en"] - _SHARED_WORDS
 
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 # A token whose dot or @ joins word characters is an identifier, not prose: `github.com`,
@@ -280,8 +283,8 @@ NON_EN_DIACRITIC_RATE = 0.02
 # One accented loanword or proper noun (`café`, `résumé`, `José`) must not alone pull otherwise
 # plain English off the English checkpoint: the rate is measured over every character, so a
 # single `é` in a short sentence clears the floor above. English function words keep their say
-# unless the rate is well above the floor, so genuinely non-English text still loses its
-# English reading.
+# only through the rescue below -- two distinct words no other list holds, at most one
+# non-English letter word, and a rate still well above the floor vetoes regardless.
 ENGLISH_RESCUE_DIACRITIC_RATE = 0.06
 
 # Non-Latin text is not for the English checkpoint even when Latin letters are the plurality: a
@@ -330,6 +333,23 @@ def _non_latin_words(text: str) -> List[str]:
     return [w for w in runs if len(w) >= 2 and not w[0].isupper()]
 
 
+def _english_rescued_by_words(words: List[str], diac_rate: float) -> bool:
+    """Whether plain-English function words outvote a marginal diacritic rate (#337).
+
+    The rate is measured over every character, so one accented loanword or proper noun in a
+    short sentence clears `NON_EN_DIACRITIC_RATE` outright. English still wins when it shows at
+    least two distinct function words no other list holds and at most one word carrying a
+    non-English letter: one loanword is not a non-English vocabulary, while the odd word a
+    Danish or Swedish sentence picks up (`i`, `at`, `for`, `have`) is not an English sentence
+    either. A rate well above `ENGLISH_RESCUE_DIACRITIC_RATE` vetoes regardless.
+    """
+    if diac_rate >= ENGLISH_RESCUE_DIACRITIC_RATE:
+        return False
+    if len(set(words) & _EN_ONLY_WORDS) < 2:
+        return False
+    return sum(1 for w in set(words) if any(ch in _NON_EN_DIACRITICS for ch in w)) <= 1
+
+
 def latin_profile(text: str) -> Dict[str, object]:
     """Evidence behind the Latin-script language guess.
 
@@ -370,9 +390,7 @@ def latin_profile(text: str) -> Dict[str, object]:
         # Needs two hits here too. One shared function word ("para" in Turkish text) named Spanish
         # on the strength of the diacritics alone, which is a guess dressed as a detection.
         lang = best_lg
-    elif en and (not non_english or diac_rate < ENGLISH_RESCUE_DIACRITIC_RATE):
-        # A marginal diacritic rate (one loanword) does not outvote English function words;
-        # only a rate well above the floor keeps its veto.
+    elif en and (not non_english or _english_rescued_by_words(words, diac_rate)):
         lang = "en"
     return {"language": lang, "english_hits": en, "diacritic_rate": diac_rate,
             "looks_non_english": non_english}
