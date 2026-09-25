@@ -249,7 +249,8 @@ def _no_init_weights():
     return no_init_weights()
 
 
-def build_model(cfg: Dict, encoder_dir: Optional[str] = None, pretrained: bool = True) -> DecisionModel:
+def build_model(cfg: Dict, encoder_dir: Optional[str] = None, pretrained: bool = True,
+                revision: Optional[str] = None) -> DecisionModel:
     """Build the decision model described by `cfg`.
 
     With `pretrained=False`, or when `encoder_dir` holds a saved encoder config, nothing is
@@ -266,7 +267,11 @@ def build_model(cfg: Dict, encoder_dir: Optional[str] = None, pretrained: bool =
         with _no_init_weights():
             enc = AutoModel.from_config(ecfg, attn_implementation="sdpa")
         return DecisionModel(enc, head_layers, n_act, no_init=True)
-    enc = AutoModel.from_pretrained(cfg["encoder"], attn_implementation="sdpa")
+    # Training-time Hub load of the base encoder; allow pinning it like the checkpoints.
+    kw = {"attn_implementation": "sdpa"}
+    if revision:
+        kw["revision"] = revision
+    enc = AutoModel.from_pretrained(cfg["encoder"], **kw)
     return DecisionModel(enc, head_layers, n_act)
 
 

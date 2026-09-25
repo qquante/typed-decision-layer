@@ -29,6 +29,7 @@ from .common import (
     temp_bucket,
 )
 from .hooks import HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks
+from .revisions import resolve_revision, snapshot_revision, verify_digests
 
 
 def _fix_tokenizer_config(path: str):
@@ -136,6 +137,11 @@ def _verify_compatibility(model: torch.nn.Module, cfg: Dict, weights: Dict[str, 
 _TOKENIZERS: Dict[tuple, Any] = {}
 _TOKENIZERS_LOCK = threading.Lock()
 
+# The per-inference CPU fallback rewrites shared runtime state (device, dtype, amp) and moves the
+# model while other threads may be running their own forward, so the demotion and the restore are
+# serialised. A second request that hits OOM waits here and re-demotes only if it needs to.
+_OOM_FALLBACK_LOCK = threading.Lock()
+
 
 def _load_tokenizer(tok_dir: str, cfg: Dict) -> Any:
     """Tokenizer for a checkpoint, parsed once per process.
@@ -174,7 +180,9 @@ def _amp_context(device, dtype, enabled: bool):
 
     Entering `torch.autocast` on a device torch has no autocast backend for raises even with
     `enabled=False` ("User specified an unsupported autocast device_type mps"), which broke
-    every `predict()` on Apple Silicon on some torch builds. Only enter it when we use it.
+    every `predict()` on Apple Silicon on some torch builds. Only enter it when we use it;
+    the `enabled` flag is set per device by the load-time policy, which skips XPU on builds
+    without an XPU autocast backend.
     """
     if not enabled:
         return nullcontext()
@@ -217,6 +225,8 @@ class Agent(HookRegistry):
         subfolder: Optional[str] = None,
         fast: bool = False,
         compile: bool = False,
+        revision: Optional[str] = None,
+        expected_sha256: Optional[Dict[str, str]] = None,
         lang_temperatures: Optional[Dict[str, Dict[str, Any]]] = None,
         hooks=None,
         on_predict_start=None,
@@ -225,6 +235,13 @@ class Agent(HookRegistry):
         hooks_concurrent: bool = True,
     ):
         """Load a Laya checkpoint.
+
+        `revision` optionally pins the Hub download to an explicit commit SHA/branch/tag;
+        when omitted, huggingface_hub's normal default and existing offline cache are used.
+        `expected_sha256` ({path relative to the checkpoint dir: hexdigest})
+        verifies artifact integrity before any weight is parsed or executed; it is opt-in
+        and applies to local directories too. A missing artifact raises `FileNotFoundError`
+        and a digest mismatch raises `ValueError`; either error refuses the load.
 
         `fast=True` swaps the encoder/head forward for the TileLang fast path (CUDA only, needs
         `pip install laya[fast]`); see `Agent.accelerate`.
@@ -247,6 +264,7 @@ class Agent(HookRegistry):
         from safetensors.torch import load_file
 
         model_dir = model_id_or_path
+        self.revision: Optional[str] = None
         if not os.path.exists(model_dir):
             if model_id_or_path.startswith(("/", "./", "../")) or os.path.isabs(model_id_or_path):
                 raise FileNotFoundError(
@@ -257,6 +275,7 @@ class Agent(HookRegistry):
 
             # Restrict root checkpoints too: the default repo also contains sibling
             # checkpoints, which an unfiltered snapshot would unnecessarily download.
+            revision = resolve_revision(model_id_or_path, revision)
             prefix = f"{subfolder}/" if subfolder else ""
             kw = {
                 "token": token or os.environ.get("HF_TOKEN") or None,
@@ -264,7 +283,11 @@ class Agent(HookRegistry):
                     "rl_agent_config.json", "model.safetensors", "tokenizer/*", "encoder/*",
                 )],
             }
+            if revision:
+                kw["revision"] = revision
             model_dir = snapshot_download(model_id_or_path, **kw)
+            # The cache layout records which commit the snapshot points at.
+            self.revision = snapshot_revision(model_dir) or revision
 
         if subfolder:
             model_dir = os.path.join(model_dir, subfolder)
@@ -272,6 +295,9 @@ class Agent(HookRegistry):
                 raise FileNotFoundError(
                     f"Subfolder {subfolder!r} not found in {model_id_or_path!r}."
                 )
+
+        # Verify integrity before any file in the checkpoint is parsed or executed.
+        verify_digests(model_dir, expected_sha256)
 
         _fix_tokenizer_config(model_dir)
 
@@ -379,12 +405,15 @@ class Agent(HookRegistry):
                 "using %s. Treat confidence from the affected entries as uncalibrated."
                 % (TEMP_MIN, TEMP_MAX, ", ".join(rejected)),
                 RuntimeWarning, stacklevel=2)
-        # Autocast policy. CUDA and MPS both support fp16/bf16 autocast and the shipped
+        # Autocast policy. CUDA, MPS and XPU all support fp16/bf16 autocast and the shipped
         # checkpoints are trained in reduced precision. CPU bf16 is only a win on hardware with
         # native BF16, so it stays opt-in via LAYA_CPU_AMP=bf16. MPS fp16 is slower than fp32 on
         # a single small row (autocast overhead dominates) and only wins once the batch has
         # several rows, so it is gated per call by `mps_amp_min_rows` (default 5, override with
-        # LAYA_MPS_AMP_MIN_ROWS) rather than enabled unconditionally.
+        # LAYA_MPS_AMP_MIN_ROWS) rather than enabled unconditionally. XPU autocast supports
+        # bf16/fp16 only, and entering it on a torch build without an XPU autocast backend
+        # raises on every predict (the failure #273 fixed for MPS), so it is only enabled on
+        # builds that have one.
         self.dtype = torch.float32
         self.amp_enabled = False
         self.mps_amp_min_rows = _mps_amp_min_rows()
@@ -397,6 +426,12 @@ class Agent(HookRegistry):
         elif self.device.type == "mps":
             self.amp_enabled = True
             self.dtype = torch.float16
+        elif self.device.type == "xpu":
+            # Device selection above already requires torch.xpu for an xpu device; the probe
+            # also guards hand-built agents on builds without an XPU autocast backend.
+            if getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
+                self.amp_enabled = True
+                self.dtype = torch.bfloat16
         elif self.device.type == "cpu":
             if os.environ.get("LAYA_CPU_AMP", "").lower() in ("bf16", "bfloat16"):
                 self.amp_enabled = True
@@ -436,9 +471,11 @@ class Agent(HookRegistry):
 
     def accelerate(self, use_graphs: bool = True, strict: bool = False):
         """Replace the model forward with the TileLang fast path (fused GEMM/GEGLU/LayerNorm/RoPE kernels,
-        sliding-window flash attention, bf16 resident weights, CUDA graphs per shape bucket).
+        sliding-window flash attention, 16-bit resident weights, CUDA graphs per shape bucket).
 
-        Same numerics as the stock bf16 autocast path (see benchmarks/bench_fast.py). Returns True if
+        The fast path runs in the agent's autocast dtype at the time of the call (bf16 or fp16), so it
+        matches the stock forward it replaces within rounding (see benchmarks/parity_fast.py). After
+        changing `agent.dtype`, call `deaccelerate()` then `accelerate()` to rebuild it. Returns True if
         enabled. With `strict=False` any failure (no CUDA, tilelang missing) leaves the stock path in place.
         """
         if self._fast is not None:
@@ -451,7 +488,9 @@ class Agent(HookRegistry):
         for _attempt in range(2):  # tilelang's JIT cache has been seen to fail once, then succeed
             try:
                 from .fast import FastLaya
-                self._fast = FastLaya(self.model, max_len=self.cfg.get("max_len", 512), use_graphs=use_graphs)
+                fast_dtype = self.dtype if self.dtype in (torch.bfloat16, torch.float16) else torch.bfloat16
+                self._fast = FastLaya(self.model, max_len=self.cfg.get("max_len", 512), use_graphs=use_graphs,
+                                      dtype=fast_dtype)
                 break
             except Exception as e:  # tilelang missing / unsupported arch
                 last = e
@@ -469,6 +508,29 @@ class Agent(HookRegistry):
         if self._fast is not None:
             self.model.forward = self._stock_forward
             self._fast = None
+
+    def _restore_runtime(self, device, dtype, amp_enabled: bool, had_fast: bool) -> None:
+        """Undo the scoped CPU fallback of `_infer`, best effort.
+
+        A model that no longer fits `device` after the CPU retry stays demoted: raising out of a
+        request that already succeeded would trade a silent slowdown for a crash, the worse
+        failure of the two.
+        """
+        try:
+            self.model.to(device)
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+            # The move can fail partway through, leaving parameters split between devices, so
+            # finish the demotion before giving up: every later call must find one device,
+            # not a mix of both.
+            self.model.to(torch.device("cpu"))
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("Warning: could not move the model back to %s after the CPU retry (%s); "
+                  "staying on CPU." % (device, e))
+            return
+        self.device, self.dtype, self.amp_enabled = device, dtype, amp_enabled
+        if had_fast:
+            self.accelerate()
 
     @staticmethod
     def _check_question(qid: str, qdef: Any) -> None:
@@ -495,6 +557,17 @@ class Agent(HookRegistry):
                                  "label -> description, or a list of labels" % (qid,))
             if not crit:
                 raise ValueError("question %r: a choice question needs at least one criterion" % (qid,))
+            # A label is used as a dict key when a list of labels is normalised, so a list, dict
+            # or set label raised `TypeError: unhashable type: 'list'` from three frames down --
+            # which names neither the question nor the label, and which `serve` cannot classify
+            # as a caller error, so over HTTP it became a 500 "inference failed" instead of a 422.
+            # Labels are rendered as option text, so a nested structure has no meaning here.
+            for i, label in enumerate(crit if isinstance(crit, list) else crit.keys()):
+                if isinstance(label, (list, dict, set, bytearray)):
+                    raise ValueError(
+                        "question %r: choice label %d is a %s; a label is rendered as option text "
+                        "and used as the answer key, so it must be a scalar (a string, number or "
+                        "None), got %r" % (qid, i, type(label).__name__, label))
         elif t == "score":
             if not isinstance(crit, list):
                 raise ValueError("question %r: a score question takes 'criteria' as a list of level "
@@ -624,19 +697,32 @@ class Agent(HookRegistry):
             return run()
         except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
             low = str(e).lower()
-            if self.device.type != "cpu" and ("memory" in low or "cuda" in low):
-                print("Warning: GPU memory exceeded during inference. Falling back to CPU...")
-                # FastLaya keeps copied CUDA weights and replaces model.forward.  Move
-                # the model first without that replacement, or the retry would still
-                # execute on the failed CUDA fast path.
-                self.deaccelerate()
-                self.device = torch.device("cpu")
-                self.dtype = torch.float32
-                self.amp_enabled = False
-                self.model.to(self.device)
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                return run()
+            # An OOM is `torch.cuda.OutOfMemoryError` or says so in its message. The bare
+            # "cuda" substring used to be accepted too, so any CUDA-shaped RuntimeError (a
+            # shape, assert or kernel error) silently and permanently demoted the agent.
+            if self.device.type != "cpu" and (isinstance(e, torch.cuda.OutOfMemoryError) or "memory" in low):
+                print("Warning: GPU memory exceeded during inference. Retrying this request on CPU...")
+                # Scoped, not permanent: the demotion used to rewrite device/dtype/amp and move
+                # the model for the life of the process, so one oversized request left every
+                # later call ~10-15x slower on CPU. Demote under the lock, answer this request
+                # on CPU, then put the runtime back the way it was.
+                with _OOM_FALLBACK_LOCK:
+                    held_device, held_dtype, held_amp = self.device, self.dtype, self.amp_enabled
+                    had_fast = self._fast is not None
+                    # FastLaya keeps copied CUDA weights and replaces model.forward.  Move
+                    # the model first without that replacement, or the retry would still
+                    # execute on the failed CUDA fast path.
+                    self.deaccelerate()
+                    self.device = torch.device("cpu")
+                    self.dtype = torch.float32
+                    self.amp_enabled = False
+                    self.model.to(self.device)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    try:
+                        return run()
+                    finally:
+                        self._restore_runtime(held_device, held_dtype, held_amp, had_fast)
             if use_amp and self.device.type in ("mps", "cpu"):
                 # Not every MPS/CPU build implements autocast for every op. Drop to full
                 # precision once rather than failing the request.
@@ -844,6 +930,108 @@ class Agent(HookRegistry):
                     raise
         return ctx.results
 
+    def predict_long(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
+                     window: Optional[int] = None, stride: Optional[int] = None,
+                     aggregate: str = "auto", batch_size: Optional[int] = None,
+                     lang: Optional[str] = None) -> Dict[str, Any]:
+        """Evaluate questions over a state longer than the context window, scanning it in
+        overlapping windows and aggregating per question.
+
+        `system_one`/`predict` truncate a state that exceeds `max_len` to a single window (the
+        first, or for a conversation list the last), silently dropping the rest. `predict_long`
+        tokenizes the state once, splits it into overlapping token windows, scores every window in
+        shared forward passes (via `predict_batch`), and combines the per-window answers:
+
+          * noul  -> P(true) is the max over windows (the statement holds if any window supports it)
+          * choice-> the answer from the single most-confident window, so a localized signal isn't
+                     out-voted by the many neutral windows a long document is mostly made of
+                     (averaging drowns it -- the neutral majority dominates)
+          * score -> the level from the most-confident window, likewise
+
+        The returned probability/confidence is the deciding window's, **not a calibrated number for
+        the whole document**: a `noul` max over many windows drifts up with the window count even
+        with no signal, and `choice` can land on a confidently-neutral window when nothing in the
+        document is decisive. Each answer therefore carries `answer["window"]` — the deciding
+        window's `index`, `token_start`/`token_end` into the tokenized state, and the window `count`
+        — so a caller can inspect the span the answer came from rather than trust the raw number.
+
+        A state that already fits one window is passed straight to `system_one` (identical output).
+
+        Args:
+            window: state tokens per window. Defaults to the per-question state budget
+                    (`max_len - head_max_len - 8`) -- the most a window can hold for every question.
+                    A smaller window isolates a localized signal better (a short deciding span is a
+                    larger fraction of its window, so that window classifies it clearly), at the
+                    cost of more windows; the large default favors context and throughput. `noul`
+                    is robust to this, `choice`/`score` benefit from a smaller window when the
+                    deciding span is a small part of a long, otherwise-neutral document.
+            stride: token step between windows. Defaults to `window // 2` (50% overlap), so a span
+                    near a boundary still lands whole inside some window.
+            aggregate: "auto" (the per-type rules above) is the only mode for now.
+            batch_size: cap on windows per forward pass, to bound memory on very long states.
+            lang: per-language temperature selection, as in `system_one`.
+
+        Returns a single result dict, the same shape as `system_one`, with `usage["windows"]` added.
+        """
+        if aggregate != "auto":
+            raise ValueError("predict_long: only aggregate='auto' is supported")
+        max_len = self.cfg.get("max_len", 512)
+        head_max_len = self.cfg.get("head_max_len", 192)
+        budget = window if (window and window > 0) else max(64, max_len - head_max_len - 8)
+
+        state_ids = self.tok(serialize_state(state).replace(self.tok.mask_token, " "),
+                             add_special_tokens=False)["input_ids"]
+        # Fits in one window: identical to a plain call, no windowing overhead.
+        if len(state_ids) <= budget:
+            return self.system_one(state, questions, lang=lang)
+
+        step = stride if (stride and stride > 0) else max(1, budget // 2)
+        windows, starts = [], []
+        i, n = 0, len(state_ids)
+        while i < n:
+            # Decode each token window back to text so predict_batch re-tokenizes it as a normal
+            # state. For BPE tokenizers the re-tokenized boundaries can shift by a token or two vs
+            # this split; harmless for aggregation since the 50% default overlap absorbs it.
+            windows.append(self.tok.decode(state_ids[i:i + budget]))
+            starts.append(i)
+            if i + budget >= n:
+                break
+            i += step
+
+        results = self.predict_batch(windows, questions, batch_size=batch_size, lang=lang)
+
+        ids = list(questions.keys())
+        internal = {qid: self._to_internal(questions[qid]) for qid in ids}
+        answers = {}
+        for qid in ids:
+            per = [r["answers"][qid] for r in results]
+            if internal[qid]["t"] == "noul":
+                # Evidence anywhere: the strongest window decides. Its own P(true) and confidence
+                # (and act) are carried through, so the fields stay mutually consistent.
+                best = max(range(len(per)), key=lambda j: float(per[j]["noul"]))
+            else:
+                # choice / score: the most-confident window wins. Averaging over a long, mostly
+                # neutral document lets the neutral majority out-vote the one window that saw the
+                # deciding span; the single most-confident window preserves a localized signal.
+                best = max(range(len(per)), key=lambda j: float(per[j]["answer_confidence"]))
+            ans = per[best]
+            # Name the window that decided, so a caller can check the deciding span itself. The
+            # probability here is that window's, NOT a document-level calibrated number.
+            ans["window"] = {"index": best, "token_start": starts[best],
+                             "token_end": min(starts[best] + budget, len(state_ids)),
+                             "count": len(windows)}
+            answers[qid] = ans
+        # Aggregate usage generically so fields predict_batch may grow later (e.g. the fallback
+        # counters from #351) are propagated, not silently dropped: sum numeric fields across
+        # windows, carry any non-numeric field through, then record the window count.
+        usage: Dict[str, Any] = {}
+        for r in results:
+            for key, val in r["usage"].items():
+                usage[key] = (usage.get(key, 0) + val) if isinstance(val, (int, float)) else val
+        usage["output_tokens"] = 0
+        usage["windows"] = len(windows)
+        return {"model": "laya-rl-agent", "answers": answers, "usage": usage}
+
     @torch.no_grad()
     def system_one(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]], lang: Optional[str] = None,
                    hooks=None, on_predict_start=None, on_predict_end=None,
@@ -890,6 +1078,8 @@ class Agent(HookRegistry):
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
         except Exception:
             pass
         return False
@@ -917,6 +1107,7 @@ RLAgent = Agent
 
 def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str] = None,
          token: Optional[str] = None, subfolder: Optional[str] = None, fast: bool = False,
+         revision: Optional[str] = None, expected_sha256: Optional[Dict[str, str]] = None,
          lang_temperatures: Optional[Dict[str, Dict[str, Any]]] = None,
          hooks=None, on_predict_start=None, on_predict_end=None,
          hooks_raise: bool = True, hooks_concurrent: bool = True) -> Agent:
@@ -928,10 +1119,12 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
         laya.load("convaiinnovations/laya", subfolder="multilingual")
         laya.load("convaiinnovations/laya", fast=True)                # TileLang GPU fast path
 
+    `revision`/`expected_sha256` pin and verify the downloaded artifacts; see `Agent`.
     `hooks` / `on_predict_start` / `on_predict_end` observe or shape every prediction; see
     `laya.hooks`.
     """
     return Agent(model_id_or_path, device=device, token=token, subfolder=subfolder, fast=fast,
+                 revision=revision, expected_sha256=expected_sha256,
                  lang_temperatures=lang_temperatures,
                  hooks=hooks, on_predict_start=on_predict_start, on_predict_end=on_predict_end,
                  hooks_raise=hooks_raise, hooks_concurrent=hooks_concurrent)
