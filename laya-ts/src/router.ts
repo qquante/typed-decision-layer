@@ -78,13 +78,19 @@ export function matchTypedDecisionsWorkflow(
 
 const ENGLISH_SUBTAGS = new Set(["en", "eng", "english"]);
 
+// Valid `$LANG` values that name no language, so they answer nothing about the state: `C`,
+// `POSIX` and `C.UTF-8` (the official Python image's default), plus the ISO 639-2 special codes
+// `und` (undetermined), `zxx` (no linguistic content) and `mul` (multiple). They abstain like a
+// blank code instead of forcing the multilingual checkpoint on English text (Python parity).
+const LANGUAGE_AGNOSTIC_CODES = new Set(["c", "posix", "und", "zxx", "mul"]);
+
 export function englishFromCode(value: unknown): boolean | null {
   if (value === null || value === undefined) return null;
   let code = String(value).trim().toLowerCase();
   if (!code) return null;
   code = code.split(".", 1)[0]; // en_US.UTF-8 -> en_US
   const primary = code.replace(/_/g, "-").split("-", 1)[0]; // en_US -> en
-  if (!primary) return null;
+  if (!primary || LANGUAGE_AGNOSTIC_CODES.has(primary)) return null;
   return ENGLISH_SUBTAGS.has(primary);
 }
 
@@ -380,8 +386,12 @@ export class Router extends HookRegistry {
       };
     }
 
-    if (lang !== null && lang !== undefined) {
-      const key: ModelName = englishFromCode(lang) ? "english" : "multilingual";
+    // An explicit `lang` is decisive only when the code names a language. Blank or whitespace
+    // resolves to no usable hint, so it falls through to langGuess/detection exactly as an
+    // abstaining hint does (Python parity); real English/non-English codes still route now.
+    const resolvedLang = englishFromCode(lang);
+    if (resolvedLang !== null) {
+      const key: ModelName = resolvedLang ? "english" : "multilingual";
       return {
         model: key,
         repo: repoStr(this.models[key]),
