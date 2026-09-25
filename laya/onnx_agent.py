@@ -7,7 +7,10 @@ from typing import Any, Dict, Optional, Union
 
 import numpy as np
 
-from laya.hooks import HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks
+from laya.hooks import (
+    HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
+    validate_timeout,
+)
 from laya.revisions import resolve_revision, snapshot_revision, verify_digests
 from laya.common import (
     QTYPES,
@@ -31,6 +34,7 @@ class ONNXAgent(HookRegistry):
     # `hooks`/`_hooks_mutex` come from HookRegistry.
     hooks_raise = True
     hooks_concurrent = True
+    hooks_timeout = None
     _hooks_lock = None
     model_id = None
 
@@ -46,6 +50,7 @@ class ONNXAgent(HookRegistry):
         on_predict_end=None,
         hooks_raise: bool = True,
         hooks_concurrent: bool = True,
+        hooks_timeout: Optional[float] = None,
     ):
         """Load a Laya agent backed by ONNX Runtime.
 
@@ -66,10 +71,12 @@ class ONNXAgent(HookRegistry):
             on_predict_end (PredictHookArg): An opt-in end hook, run after inference.
             hooks_raise: When False, a failing hook warns and inference continues.
             hooks_concurrent: When False, hooks are serialised with a lock.
+            hooks_timeout: Bounds each hook call in seconds; None means no limit.
         """
         self.hooks = normalise_hooks(hooks, on_predict_start, on_predict_end)
         self.hooks_raise = bool(hooks_raise)
         self.hooks_concurrent = bool(hooks_concurrent)
+        self.hooks_timeout = None if hooks_timeout is None else validate_timeout(hooks_timeout)
         self._hooks_lock = threading.RLock() if not hooks_concurrent else None
         self._hooks_mutex = threading.Lock()
         self.model_id = model_id_or_path
@@ -200,15 +207,17 @@ class ONNXAgent(HookRegistry):
     def system_one(self, state: Union[str, dict, list], questions: Dict[str, Dict[str, Any]],
                    hooks=None, on_predict_start=None, on_predict_end=None,
                    hooks_raise: Optional[bool] = None,
+                   hooks_timeout: Optional[float] = None,
                    max_len: Optional[int] = None,
                    head_max_len: Optional[int] = None) -> Dict[str, Any]:
         """Evaluate typed questions, running any opt-in hooks around the inference."""
         active = compose_hooks(self.hooks, hooks, on_predict_start, on_predict_end)
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
+        timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
         ctx = PredictContext(states=[state], questions=questions, model=self.model_id, agent=self,
                              max_len=max_len, head_max_len=head_max_len)
         try:
-            dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+            dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             if ctx.results is None:
                 overrides = {}
                 if ctx.max_len is not None:
@@ -219,7 +228,7 @@ class ONNXAgent(HookRegistry):
         except BaseException as exc:
             ctx.error = exc
             try:
-                dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 exc.__context__ = hook_exc
             raise
@@ -228,7 +237,7 @@ class ONNXAgent(HookRegistry):
             if ctx.results is not None:
                 ctx.usage = aggregate_usage(ctx.results)
             try:
-                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 if ctx.error is not None:
                     ctx.error.__context__ = hook_exc

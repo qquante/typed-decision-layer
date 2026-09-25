@@ -167,6 +167,20 @@ def test_same_checkpoint_different_questions_split_agent_batches(fake_agent):
     assert calls[1][2] == q2
 
 
+def test_predict_batch_honours_hooks_timeout(fake_agent):
+    def slow_hook(ctx):
+        sleep(0.3)
+
+    router = Router(hooks_timeout=0.05, on_predict_start=slow_hook)
+    with pytest.raises(TimeoutError):
+        router.predict_batch([request("one")])
+
+    # A per-call override wins, exactly as it does on `predict`.
+    router = Router(hooks_timeout=0.05, on_predict_start=slow_hook)
+    results = router.predict_batch([request("one")], hooks_timeout=5.0)
+    assert len(results) == 1
+
+
 def test_route_batch_forwards_lang_guess(fake_agent):
     built, _ = fake_agent
     router = Router()

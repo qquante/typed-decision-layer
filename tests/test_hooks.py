@@ -1027,6 +1027,158 @@ _hooks.clear_default_hooks()
 check("defaults/fire once per request", events, [("default", "start", "router"), ("default", "end", "router")] * 2)
 
 
+# --------------------------------------------------------------- async hooks
+import asyncio  # noqa: E402
+
+from laya import AsyncHook  # noqa: E402
+from laya.hooks import run_coroutine_sync  # noqa: E402
+
+calls = []
+
+
+class AsyncAudit:
+    async def on_predict_end(self, ctx):
+        await asyncio.sleep(0)
+        calls.append("wrapped")
+
+
+f = make_fake()
+f.add_hook(AsyncHook(AsyncAudit()))
+f.predict_batch(["s0"], QUESTIONS)
+check("async/wrapped hook awaited", calls, ["wrapped"])
+
+calls.clear()
+
+
+async def async_end(ctx):
+    await asyncio.sleep(0)
+    calls.append("plain")
+
+
+f = make_fake()
+f.predict_batch(["s0"], QUESTIONS, on_predict_end=async_end)
+check("async/plain callable awaited", calls, ["plain"])
+
+calls.clear()
+
+
+async def async_start(ctx):
+    calls.append("loop")
+
+
+f = make_fake()
+
+
+async def _in_loop():
+    f.predict_batch(["s0"], QUESTIONS, on_predict_start=async_start)
+
+
+asyncio.run(_in_loop())
+check("async/works inside a running loop", calls, ["loop"])
+
+
+async def _seven():
+    return 7
+
+
+check("async/run_coroutine_sync returns", run_coroutine_sync(_seven()), 7)
+check_raises("async/AsyncHook rejects a class", TypeError, lambda: AsyncHook(AsyncAudit))
+
+
+# --------------------------------------------------------------- hook timeout
+def slow_hook(ctx):
+    time.sleep(0.3)
+
+
+f = make_fake()
+raised = None
+try:
+    f.predict_batch(["s0"], QUESTIONS, on_predict_start=slow_hook, hooks_timeout=0.05)
+except TimeoutError as exc:
+    raised = str(exc)
+check_true("timeout/raises TimeoutError", isinstance(raised, str) and "exceeded" in raised)
+
+f = make_fake()
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    res = f.predict_batch(["s0"], QUESTIONS, on_predict_start=slow_hook,
+                          hooks_timeout=0.05, hooks_raise=False)
+check("timeout/hooks_raise=False continues", len(res), 1)
+check_true("timeout/hooks_raise=False warns",
+           any(issubclass(w.category, RuntimeWarning) for w in caught))
+
+f = make_fake()
+f.hooks_timeout = 0.05
+raised = None
+try:
+    f.predict_batch(["s0"], QUESTIONS, on_predict_start=slow_hook)
+except TimeoutError:
+    raised = True
+check("timeout/instance-level applies", raised, True)
+
+f = make_fake()
+f.hooks_timeout = 0.05
+res = f.predict_batch(["s0"], QUESTIONS, on_predict_start=slow_hook, hooks_timeout=5.0)
+check("timeout/per-call override wins", len(res), 1)
+
+f = make_fake()
+res = f.predict_batch(["s0"], QUESTIONS, on_predict_end=lambda ctx: None, hooks_timeout=1.0)
+check("timeout/fast hook unaffected", len(res), 1)
+
+
+# --------------------------------------------------------------- input validation and context
+import contextvars  # noqa: E402
+
+from laya.hooks import validate_timeout  # noqa: E402
+
+check_raises("timeout/zero is rejected", ValueError, lambda: validate_timeout(0))
+check_raises("timeout/negative is rejected", ValueError, lambda: validate_timeout(-0.5))
+check("timeout/positive passes through", validate_timeout(1.5), 1.5)
+check("timeout/None means no limit", validate_timeout(None), None)
+
+f = make_fake()
+check_raises("timeout/zero per call is rejected", ValueError,
+             lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=0))
+
+not_running = asyncio.new_event_loop()
+try:
+    check_raises("async/a non-running loop is rejected", ValueError,
+                 lambda: run_coroutine_sync(_seven(), loop=not_running))
+finally:
+    not_running.close()
+
+
+async def _own_loop():
+    own = asyncio.get_running_loop()
+    try:
+        run_coroutine_sync(_seven(), loop=own)
+    except ValueError:
+        return "raised"
+    return "no"
+
+
+check("async/the calling thread's own loop is rejected", asyncio.run(_own_loop()), "raised")
+check_raises("async/AsyncHook rejects an object with no events", TypeError,
+             lambda: AsyncHook(object()))
+
+_cv_seen = contextvars.ContextVar("cv_seen", default=None)
+_cv_calls = []
+
+
+class CvHook:
+    def on_predict_start(self, ctx):
+        _cv_calls.append(_cv_seen.get())
+
+
+f = make_fake()
+_token = _cv_seen.set("request-1")
+try:
+    f.predict_batch(["s0"], QUESTIONS, hooks=[CvHook()], hooks_timeout=1.0)
+finally:
+    _cv_seen.reset(_token)
+check("timeout/a timed hook sees the caller's contextvars", _cv_calls, ["request-1"])
+
+
 # --------------------------------------------------------------- report
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f_ in FAIL:
