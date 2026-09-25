@@ -464,9 +464,11 @@ class Agent(HookRegistry):
 
     def accelerate(self, use_graphs: bool = True, strict: bool = False):
         """Replace the model forward with the TileLang fast path (fused GEMM/GEGLU/LayerNorm/RoPE kernels,
-        sliding-window flash attention, bf16 resident weights, CUDA graphs per shape bucket).
+        sliding-window flash attention, 16-bit resident weights, CUDA graphs per shape bucket).
 
-        Same numerics as the stock bf16 autocast path (see benchmarks/bench_fast.py). Returns True if
+        The fast path runs in the agent's autocast dtype at the time of the call (bf16 or fp16), so it
+        matches the stock forward it replaces within rounding (see benchmarks/parity_fast.py). After
+        changing `agent.dtype`, call `deaccelerate()` then `accelerate()` to rebuild it. Returns True if
         enabled. With `strict=False` any failure (no CUDA, tilelang missing) leaves the stock path in place.
         """
         if self._fast is not None:
@@ -479,7 +481,9 @@ class Agent(HookRegistry):
         for _attempt in range(2):  # tilelang's JIT cache has been seen to fail once, then succeed
             try:
                 from .fast import FastLaya
-                self._fast = FastLaya(self.model, max_len=self.cfg.get("max_len", 512), use_graphs=use_graphs)
+                fast_dtype = self.dtype if self.dtype in (torch.bfloat16, torch.float16) else torch.bfloat16
+                self._fast = FastLaya(self.model, max_len=self.cfg.get("max_len", 512), use_graphs=use_graphs,
+                                      dtype=fast_dtype)
                 break
             except Exception as e:  # tilelang missing / unsupported arch
                 last = e
