@@ -54,8 +54,8 @@ Each metric is computed per answer where it applies and aggregated over the data
 | `noul_accuracy` | `noul` | fraction whose boolean (probability >= 0.5) matches |
 | `score_mae` | `score` | mean absolute error |
 | `score_within_<tol>` | `score` | fraction within an absolute tolerance |
-| `ece` | any answer with a confidence | expected calibration error, 15 bins, computed on `answer["confidence"]` |
-| `mean_confidence` | any answer with a confidence | mean reported confidence |
+| `ece` | any answer with a confidence | expected calibration error, 15 bins, computed on `answer["answer_confidence"]`, the calibrated probability Laya reports on every answer type |
+| `mean_confidence` | any answer with a confidence | mean reported `answer["answer_confidence"]` |
 | `latency_p50_ms`, `latency_p95_ms` | per request | wall time, informational |
 
 Add `ScoreWithin(0.25)` to the evaluator list for a tolerance metric; the default set is
