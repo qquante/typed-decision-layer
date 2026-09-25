@@ -86,7 +86,8 @@ export function buildQuestionPrefix(tok: TokenizerLike, q: InternalQ,
 export function sequenceWithState(prefix: QuestionPrefix, stateIds: number[], sepId: number,
     maxLen = 512, truncateLeft = false): { ids: number[]; markers: number[] } {
   const room = Math.max(0, maxLen - prefix.ids.length - 1);
-  const st = truncateLeft ? stateIds.slice(-room) : stateIds.slice(0, room);
+  // not stateIds.slice(-room): with no room left, slice(-0) is the whole state rather than none of it
+  const st = truncateLeft ? stateIds.slice(Math.max(0, stateIds.length - room)) : stateIds.slice(0, room);
   const ids = [...prefix.ids, ...st, sepId].slice(0, maxLen);
   return { ids, markers: prefix.markers.filter((m) => m < maxLen) };
 }
