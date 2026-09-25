@@ -3,6 +3,13 @@
 Benchmark harnesses and raw results for the Laya checkpoints. This branch is the evidence behind
 the numbers quoted in the main README — nothing here is imported by the `laya` package.
 
+## Evaluation
+
+- [`eval/`](eval/README.md): the independent per-language MASSIVE harness (`laya_eval.py`), the per-case
+  report behind the published numbers, plus the metamorphic and presentation checks.
+- [`evals/`](evals/README.md): the labelled datasets, thresholds and regression gate consumed by
+  `laya.evals` / `laya-evals` and the scheduled `evals` workflow.
+
 ## Community diagnostics
 
 - [Chinese workplace decisions (Feishu-style)](benchmarks/feishu_zh/README.md) — 64 synthetic scenarios, paired recorded Laya/Jev responses, English/Chinese cards, and a model-free audit. [中文入口](benchmarks/feishu_zh/README.zh-CN.md). Start with `python research/benchmarks/feishu_zh/audit.py`; no downloads or API keys required. This is a contributed historical snapshot, separate from the upstream sweeps below.

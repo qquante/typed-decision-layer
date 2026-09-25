@@ -764,6 +764,26 @@ text generation. Tests: `tests/test_mcp.py` (CI, no weights) and
 
 ---
 
+## Evaluation harness
+
+`laya.evals` scores a labelled dataset and gates a build on it, so a quality change is a
+reviewable diff instead of a hand-check. It is pure Python plus numpy, imports no torch, and
+needs no weights until you point it at a checkpoint.
+
+```bash
+laya-evals validate research/evals/fixture.jsonl
+laya-evals run data.jsonl --model english --min-accuracy 0.8 --max-ece 0.05 --slice language
+laya-evals run data.jsonl --baseline baseline.json --tolerance choice_accuracy=0.02 --json report.json
+```
+
+`run` reports overall and per-slice metrics (`choice_accuracy`, `noul_accuracy`, `score_mae`,
+`ece`, `mean_confidence`, latency) and exits non-zero on a threshold or baseline failure, so it
+drops into CI unchanged. A weight-free job runs the metric and API tests on every PR, and a
+scheduled workflow evaluates the English checkpoint against the committed baseline. See
+[**`docs/evals.md`**](docs/evals.md) for the dataset format and the gate.
+
+---
+
 ## Benchmarks
 
 Community diagnostics: [Chinese workplace decisions (Feishu-style)](research/benchmarks/feishu_zh/README.md) · [中文说明](research/benchmarks/feishu_zh/README.zh-CN.md). Includes frozen synthetic cases, archived paired Laya/Jev responses, and an offline audit; separate from the benchmark suites below. Also [Chinese short-command routing](research/benchmarks/zh_short_commands/README.md) · [中文说明](research/benchmarks/zh_short_commands/README.zh-CN.md): 18 frozen commands and a seven-rung ablation of the documented prompt guidance, which locates the accuracy loss on the four-question path rather than the six-option one.
