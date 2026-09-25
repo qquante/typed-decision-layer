@@ -283,6 +283,7 @@ def create_app(router: Optional[Any] = None):
         return {
             "status": "ok",
             "loaded": router.loaded,
+            "revisions": getattr(router, "loaded_revisions", {}),
             "device": os.environ.get("LAYA_DEVICE") or "auto",
         }
 
