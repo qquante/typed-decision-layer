@@ -197,15 +197,16 @@ Routing alone never downloads a checkpoint, so it returns in milliseconds. `--pr
 ## Try it locally: web GUI + JSON API
 
 `examples/server.py` is a self-contained FastAPI app for testing Laya without writing any code:
-a request builder (or a raw-JSON paste box) that renders `choice`/`score`/`noul` answers as
-0-100 bars, plus a plain JSON API (`/predict`, `/predict/batch`) for scripting against.
+a two-pane playground (edit the request as a form or as JSON, run it with Ctrl+Enter, read each
+answer's full distribution and calibrated confidence, copy it as curl or Python), plus a plain
+JSON API (`/predict`, `/predict/batch`) for scripting against.
 
 ```bash
 pip install "laya[serve]"
 python examples/server.py               # http://127.0.0.1:8000
 ```
 
-Open `http://127.0.0.1:8000` in a browser for the builder UI, or hit it directly:
+Open `http://127.0.0.1:8000` in a browser for the playground, or hit it directly:
 
 ```bash
 curl -s localhost:8000/predict -H 'content-type: application/json' -d '{
