@@ -184,6 +184,12 @@ check_true("compose.http/leaves the quickstart service alone",
 check_true("Dockerfile/installs the serve extra", '".[serve]"' in dockerfile, dockerfile[:400])
 check_true("Dockerfile/still runs pip check", "pip check" in dockerfile)
 
+# torch 2.14's eager Triton kernels compile on the first CUDA inference and need a C compiler the
+# slim runtime image does not have (#365). The kill switch keeps the stock kernels.
+check_true("Dockerfile/runtime stage disables torch's native Triton JIT (#365)",
+           re.search(r"^\s*TORCH_DISABLE_NATIVE_JIT=1", dockerfile.partition("AS runtime")[2], re.M) is not None,
+           "without TORCH_DISABLE_NATIVE_JIT=1 a GPU image serves 500s while /health stays green")
+
 # Overrides for `laya` never reach `laya-serve`, a separate service. If the CUDA override does
 # not repeat the args for laya-serve, that service silently serves on CPU.
 check_true("compose.cuda/covers laya-serve too",

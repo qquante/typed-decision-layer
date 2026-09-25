@@ -201,10 +201,14 @@ def test_body_read_preserves_parse_error_codes(monkeypatch):
         assert r.status_code == 400, (payload, r.status_code)
 
 
-def test_health(monkeypatch):
+def test_health_supports_router_without_loaded_revisions(monkeypatch):
+    # FakeRouter deliberately has no loaded_revisions attribute. Injected test or
+    # embedding routers predating revision reporting must remain health-compatible.
     client, _ = _client(monkeypatch)
     r = client.get("/health")
-    assert r.status_code == 200 and r.json()["status"] == "ok"
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+    assert r.json()["revisions"] == {}
 
 
 def test_helpers():
@@ -388,6 +392,42 @@ def test_validation_errors_are_not_logged_as_failures(monkeypatch, caplog):
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR], caplog.records
 
 
+def test_a_nested_choice_label_is_a_caller_error_not_a_server_fault(monkeypatch):
+    """A `criteria` list containing a list/dict label is the caller's mistake, so it must be 422.
+
+    It used to raise `TypeError: unhashable type: 'list'` from `_to_internal`, three frames below
+    `_check_question`, which names neither the question nor the label -- and `serve` maps only
+    `ValueError` to 422, so the caller got a 500 "inference failed" with the reason discarded.
+    `ValueError` is what carries the message to the client, so the guard has to raise that type.
+    """
+    class ValidatingRouter:
+        """The real guard, without a checkpoint: what `Agent.system_one` runs before encoding.
+
+        The app does not validate `criteria` itself -- the agent does -- so the stub calls the
+        same guard `system_one` calls, and any `ValueError` it raises is what `serve` has to map
+        to 422. `predict` still fails loudly if the guard lets something through.
+        """
+
+        loaded = ["english"]
+
+        def predict(self, state, questions, model=None):
+            from laya.agent import Agent
+            for qid, qdef in questions.items():
+                Agent._check_question(qid, qdef)
+            raise AssertionError("validation should have rejected this before predict()")
+
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    client = TestClient(create_app(router=ValidatingRouter()), raise_server_exceptions=False)
+
+    for label in (["billing"], {"billing": "x"}):
+        body = dict(REQ)
+        body["questions"] = {"dept": {"type": "choice", "instructions": "Which team?",
+                                      "criteria": [label, "tech"]}}
+        response = client.post("/v1/systemone", json=body)
+        assert response.status_code == 422, (label, response.status_code, response.text)
+        assert "choice label 0" in response.text, response.text
+
+
 def test_inference_timing_headers():
     """POST /v1/systemone returns Server-Timing and X-Inference-Time-Ms headers."""
     router = FakeRouter()
@@ -402,6 +442,31 @@ def test_inference_timing_headers():
     assert "X-Inference-Time-Ms" in res.headers
     dur = float(res.headers["X-Inference-Time-Ms"])
     assert dur >= 0.0
+
+
+def test_a_missing_state_is_rejected_rather_than_answered():
+    """No `state` key, or `"state": null`, must be a 400 and not a decision about "null".
+
+    `serialize_state(None)` is `json.dumps(None)` -- the four characters `null` -- so the request
+    was answered as a decision about that literal text: HTTP 200, byte-identical to sending
+    `"state": "null"`, and at ~0.94 confidence on the real checkpoint. The caller gets an answer
+    about a state they never supplied, with nothing in the response to say so.
+    """
+    router = FakeRouter()
+    client = TestClient(create_app(router=router))
+    questions = {"dept": {"type": "choice", "instructions": "which?",
+                          "criteria": {"billing": "invoices"}}}
+
+    for body in ({"questions": questions},                      # no state key
+                 {"state": None, "questions": questions}):      # explicit null
+        res = client.post("/v1/systemone", json=body)
+        assert res.status_code == 400, (body, res.status_code, res.text)
+        assert "'state' is required" in res.text, res.text
+
+    # a state that IS a string is the caller's business, including the text "null" and ""
+    for state in ("null", "", "0"):
+        res = client.post("/v1/systemone", json={"state": state, "questions": questions})
+        assert res.status_code == 200, (state, res.status_code, res.text)
 
 
 class GatedRouter(FakeRouter):
