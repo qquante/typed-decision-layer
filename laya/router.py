@@ -39,6 +39,7 @@ from .hooks import (
     HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
     validate_timeout,
 )
+from .hooks import _SKIP_DEFAULTS
 from .lang import analyse
 
 # The hub repo bundles all three checkpoints; only the requested subfolder is downloaded.
@@ -201,6 +202,11 @@ class Router(HookRegistry):
         r = Router(preload=True, device="cuda")
         r.preload(["english", "multilingual"])      # or just the two you serve
 
+    Hub revisions are opt-in. `revision` applies one commit to every model;
+    `revisions={"english": "...", "multilingual": "..."}` overrides that per model,
+    which is useful when standalone repositories were reviewed at different commits.
+    Without either, huggingface_hub's normal default and existing offline cache are used.
+
     Hooks are opt-in and run at the Router level: `on_route` sees the routing decision,
     `on_load` / `on_evict` see model lifecycle, and `on_predict_start` / `on_predict_end`
     wrap the whole route+infer call. See `laya.hooks`.
@@ -218,6 +224,8 @@ class Router(HookRegistry):
         models: Optional[Dict[str, str]] = None,
         device: Optional[str] = None,
         token: Optional[str] = None,
+        revision: Optional[str] = None,
+        revisions: Optional[Dict[str, Optional[str]]] = None,
         max_loaded: int = 2,
         default: str = "english",
         auto_task_detection: bool = False,
@@ -242,6 +250,13 @@ class Router(HookRegistry):
             self.models.update({normalise_name(k): v for k, v in models.items()})
         self.device = device
         self.token = token or os.environ.get("HF_TOKEN")
+        # Optional Hub revision (commit SHA/branch/tag) applied to every checkpoint load.
+        # `revisions` overrides it per normalized model name, for standalone repos whose
+        # reviewed commits differ.
+        self.revision = revision
+        self.revisions: Dict[str, Optional[str]] = {
+            normalise_name(k): v for k, v in (revisions or {}).items()
+        }
         self.max_loaded = max(1, int(max_loaded))
         self.default = normalise_name(default)
         self.auto_task_detection = bool(auto_task_detection)
@@ -273,7 +288,11 @@ class Router(HookRegistry):
                 return self._agents[key]
             from .agent import Agent
             repo, sub = _split(self.models[key])
-            agent = Agent(repo, device=self.device, token=self.token, subfolder=sub)
+            kwargs = {"device": self.device, "token": self.token, "subfolder": sub}
+            model_revision = self.revisions.get(key, self.revision)
+            if model_revision is not None:
+                kwargs["revision"] = model_revision
+            agent = Agent(repo, **kwargs)
             self._agents[key] = agent
             self._order.append(key)
             evicted = self._evict_locked()
@@ -378,6 +397,8 @@ class Router(HookRegistry):
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
             except Exception:
                 pass
         self._dispatch_lifecycle("on_evict", freed)
@@ -386,6 +407,12 @@ class Router(HookRegistry):
     def loaded(self) -> List[str]:
         with self._lock:
             return list(self._order)
+
+    @property
+    def loaded_revisions(self) -> Dict[str, Optional[str]]:
+        """Commit SHA each resident agent was loaded from (None for local paths)."""
+        with self._lock:
+            return {name: getattr(agent, "revision", None) for name, agent in self._agents.items()}
 
     def _resolve_hint(self, hint: Any, state: Union[str, dict, list, None]) -> Optional[bool]:
         """True/False for a hint about whether the English checkpoint can read `state`.
@@ -571,6 +598,7 @@ class Router(HookRegistry):
                 if ctx.head_max_len is not None:
                     overrides["head_max_len"] = ctx.head_max_len
                 
+                skip = _SKIP_DEFAULTS.set(True)
                 try:
                     result = agent.system_one(ctx.states[0], ctx.questions, lang=effective_lang, **overrides)
                 except TypeError as e:
@@ -578,6 +606,8 @@ class Router(HookRegistry):
                         result = agent.system_one(ctx.states[0], ctx.questions, **overrides)
                     else:
                         raise
+                finally:
+                    _SKIP_DEFAULTS.reset(skip)
                 result["routing"] = dict(decision)
                 ctx.results = [result]
             else:
@@ -792,6 +822,7 @@ class Router(HookRegistry):
                     batch_kwargs = dict(group["overrides"])
                     if group["lang"] is not None:
                         batch_kwargs["lang"] = group["lang"]
+                    skip = _SKIP_DEFAULTS.set(True)
                     try:
                         batch_results = agent.predict_batch(
                             [ctx.states[0] for _, ctx in items],
@@ -812,6 +843,8 @@ class Router(HookRegistry):
                             )
                         else:
                             raise
+                    finally:
+                        _SKIP_DEFAULTS.reset(skip)
 
                     if len(batch_results) != len(items):
                         raise RuntimeError(

@@ -1017,6 +1017,15 @@ finally:
 check("defaults/cover router lifecycle", ld.events,
       [("load", "english"), ("evict", "english"), ("load", "multilingual")])
 
+events = []
+_hooks.set_default_hooks([LevelTag("default")])
+r = Router()
+r.attach("english", make_fake())
+r.predict("a", QUESTIONS, model="english")
+r.predict_batch([req("b")])
+_hooks.clear_default_hooks()
+check("defaults/fire once per request", events, [("default", "start", "router"), ("default", "end", "router")] * 2)
+
 
 # --------------------------------------------------------------- async hooks
 import asyncio  # noqa: E402
