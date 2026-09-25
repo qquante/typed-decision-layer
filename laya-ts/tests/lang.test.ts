@@ -69,4 +69,17 @@ describe("lang", () => {
     expect(analyse("que hora es en australia").language).toBe("es");
     expect(analyse("baisse le volume du haut-parleur").language).toBe("fr");
   });
+  it("does not let English sibling fields hide a German value", () => {
+    const sentence = "Mein Konto wurde zweimal belastet";
+    const asString = analyse(sentence);
+    expect(asString.language).toBe("de");
+    expect(asString.isEnglish).toBe(false);
+    expect(analyse({ message: sentence }).language).toBe(asString.language);
+    const buried = analyse({
+      agent_notes: "Please check the shipping status and refund the customer if the charge was duplicated. The order was late and we have not heard back.",
+      message: sentence,
+    });
+    expect(buried.isEnglish).toBe(false);
+    expect(buried.language).toBe("de");
+  });
 });
