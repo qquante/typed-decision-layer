@@ -18,6 +18,7 @@ from laya.common import (
     build_sequence,
     collate_items,
     confidence_from_probs,
+    encode_text,
     render_options,
     serialize_state,
     temp_bucket,
@@ -266,7 +267,8 @@ class ONNXAgent(HookRegistry):
         # re-serializing and re-tokenizing the same document inside build_sequence per
         # question (the PyTorch Agent already does this via `state_ids`).
         truncate_left = isinstance(state, list)
-        state_ids = self.tok(
+        state_ids = encode_text(
+            self.tok,
             serialize_state(state).replace(self.tok.mask_token, " "),
             add_special_tokens=False,
         )["input_ids"]

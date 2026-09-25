@@ -23,6 +23,7 @@ from .common import (
     answer_confidence,
     confidence_from_probs,
     _resolve_noul_labels,
+    encode_text,
     render_options,
     serialize_state,
     temp_bucket,
@@ -268,10 +269,6 @@ class Agent(HookRegistry):
         self.model_id = model_id_or_path
 
         from safetensors.torch import load_file
-        try:
-            from transformers.initialization import no_init_weights
-        except ImportError:  # Transformers 4.x
-            from transformers.modeling_utils import no_init_weights
 
         model_dir = model_id_or_path
         self.revision: Optional[str] = None
@@ -356,10 +353,9 @@ class Agent(HookRegistry):
         self.tok = _load_tokenizer(tok_dir, self.cfg)
 
         enc_dir = os.path.join(model_dir, "encoder")
-        # The checkpoint supplies every parameter; skip random/base-model weights.
-        with no_init_weights():
-            self.model = build_model(self.cfg, encoder_dir=enc_dir if os.path.exists(enc_dir) else None,
-                                     pretrained=False)
+        # build_model skips initialisation of every parameter; the checkpoint supplies them all.
+        self.model = build_model(self.cfg, encoder_dir=enc_dir if os.path.exists(enc_dir) else None,
+                                 pretrained=False)
 
         # Load weights and verify architectural compatibility
         weights = load_file(weights_path)
@@ -653,7 +649,8 @@ class Agent(HookRegistry):
         # re-serializing and re-tokenizing it inside build_sequence per question was pure
         # duplicated work. Tokenize in full and let build_sequence slice per question, so
         # left-truncation for conversation lists keeps its meaning.
-        state_ids = self.tok(
+        state_ids = encode_text(
+            self.tok,
             serialize_state(state).replace(self.tok.mask_token, " "),
             add_special_tokens=False,
         )["input_ids"]

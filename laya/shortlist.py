@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from .common import render_options, serialize_state
+from .common import encode_text, render_options, serialize_state
 
 DEFAULT_SHORTLIST_K = 20
 
@@ -145,7 +145,8 @@ def embed_fn_from_agent(
         parts: List[np.ndarray] = []
         for start in range(0, len(rows), batch_size):
             chunk = rows[start : start + batch_size]
-            encoded = tok(
+            encoded = encode_text(
+                tok,
                 chunk,
                 padding=True,
                 truncation=True,
