@@ -36,6 +36,7 @@ from collections.abc import Sequence as SequenceABC
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from .hooks import HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks
+from .hooks import _SKIP_DEFAULTS
 from .lang import analyse
 
 # The hub repo bundles all three checkpoints; only the requested subfolder is downloaded.
@@ -584,6 +585,7 @@ class Router(HookRegistry):
                 if ctx.head_max_len is not None:
                     overrides["head_max_len"] = ctx.head_max_len
                 
+                skip = _SKIP_DEFAULTS.set(True)
                 try:
                     result = agent.system_one(ctx.states[0], ctx.questions, lang=effective_lang, **overrides)
                 except TypeError as e:
@@ -591,6 +593,8 @@ class Router(HookRegistry):
                         result = agent.system_one(ctx.states[0], ctx.questions, **overrides)
                     else:
                         raise
+                finally:
+                    _SKIP_DEFAULTS.reset(skip)
                 result["routing"] = dict(decision)
                 ctx.results = [result]
             else:
@@ -801,6 +805,7 @@ class Router(HookRegistry):
                     batch_kwargs = dict(group["overrides"])
                     if group["lang"] is not None:
                         batch_kwargs["lang"] = group["lang"]
+                    skip = _SKIP_DEFAULTS.set(True)
                     try:
                         batch_results = agent.predict_batch(
                             [ctx.states[0] for _, ctx in items],
@@ -821,6 +826,8 @@ class Router(HookRegistry):
                             )
                         else:
                             raise
+                    finally:
+                        _SKIP_DEFAULTS.reset(skip)
 
                     if len(batch_results) != len(items):
                         raise RuntimeError(
