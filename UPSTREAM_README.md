@@ -631,7 +631,7 @@ else:
     escalate_to_human_agent(dept, reason=f"Low confidence ({conf:.2f})")
 ```
 
-A threshold is a policy you choose from measured accuracy at that coverage on your data, not a property of the model. Both checkpoints are over-confident as shipped and `laya-multilingual` has no fitted temperatures at all, so fit them before relying on these numbers — see [Calibration](#calibration) above, and the [fine-tuning notebook](notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb) for the fitting loop itself. Then pick the point where the errors you accept are ones you can live with. Confidence orders decisions; it does not establish that a decision is correct.
+A threshold is a policy you choose from measured accuracy at that coverage on your data, not a property of the model. Both checkpoints are over-confident as shipped and `laya-multilingual` has no fitted temperatures at all, so fit them before relying on these numbers — see [Calibration](#calibration) above, and the fine-tuning notebook (not included in this repository) for the fitting loop itself. Then pick the point where the errors you accept are ones you can live with. Confidence orders decisions; it does not establish that a decision is correct.
 
 A threshold also depends on the autocast dtype. On CUDA at compute capability 8 or above the runtime uses the checkpoint's `amp_dtype`, which is bf16 for all three shipped checkpoints. On the fixed set from `benchmarks/parity_fast.py` (60 states, 288 questions per checkpoint, RTX 2000 Ada) bf16 moves a probability by up to 0.073 against the fp32 forward and flips 3 of 864 argmaxes across the three checkpoints; fp16 stays within 0.019 and flips none, at the same latency. `LAYA_CUDA_AMP=fp16` selects fp16 and `LAYA_CUDA_AMP=bf16` selects bf16 (`LAYA_CPU_AMP=bf16` is the CPU counterpart). Fit and measure a threshold in the dtype you serve with.
 
@@ -851,7 +851,7 @@ Community diagnostics: [Chinese workplace decisions (Feishu-style)](research/ben
 
 All Laya numbers below are measured. Every model answered byte-identical questions
 (fixed seed) in the same run. Reproduce with
-[`research/scripts/laya_benchmark_colab.ipynb`](research/scripts/laya_benchmark_colab.ipynb) on a T4.
+`research/scripts/laya_benchmark_colab.ipynb` (not included in this repository) on a T4.
 
 ### Speed (Tesla T4, measured)
 
@@ -1071,7 +1071,7 @@ Fine-tune Laya on your own domain data. The notebook runs on Kaggle's free 2xT4 
 the whole loop: build the dataset, train with RLCD (proper-scoring-rule rewards, GRPO-style
 policy gradient), fit calibration temperatures, evaluate, and push the result to the Hub.
 
-* **[`notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb`](notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb)**
+* **`notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb` (not included in this repository)**
 
 The notebook enables gradient checkpointing on both the encoder and the decision head.
 For custom training loops, `model.head_checkpointing = True` enables activation

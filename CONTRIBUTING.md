@@ -49,7 +49,7 @@ python tests/test_hooks_api.py
 A few are pytest based and run with `python -m pytest tests/test_serve.py`, `tests/test_onnx.py`
 and `tests/test_truncation_direction.py`.
 
-The full set, including the ones the CI runs, is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+The full set, including the ones the CI runs, is in `.github/workflows/ci.yml` (not included in this repository).
 A handful of suites need hardware or local weights and are skipped otherwise: `tests/test_fast.py`
 needs CUDA, and `tests/test_local_e2e.py` and `tests/test_mcp_local_e2e.py` expect checkpoints under
 `~/laya_models`.
