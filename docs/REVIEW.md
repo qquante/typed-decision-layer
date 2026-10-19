@@ -43,3 +43,7 @@ Before any public release, complete content/asset attribution, dependency and se
 ## Maintainer
 
 [Douglas de Oliveira Silva on LinkedIn](https://www.linkedin.com/in/douglas-silva-data-analyst/) · [GitHub](https://github.com/qquante)
+
+## Additional static diagnostics
+
+Ruff fatal Python diagnostics: **2**. These are unresolved findings; they do not negate a narrower passing test suite but require review before release. See [structured diagnostics](STATIC_REVIEW.json).
