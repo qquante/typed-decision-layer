@@ -1,0 +1,19 @@
+{
+  "tool": "Ruff 0.17.1",
+  "scope": "Fatal Python diagnostics only; no automatic edits or runtime execution",
+  "exit_code": 1,
+  "findings": [
+    {
+      "code": "F821",
+      "message": "Undefined name `ag`",
+      "path": "research/scripts/bench_latency.py",
+      "line": 93
+    },
+    {
+      "code": "F811",
+      "message": "Redefinition of unused `_time` from line 5: `_time` redefined here",
+      "path": "tests/test_router.py",
+      "line": 471
+    }
+  ]
+}
