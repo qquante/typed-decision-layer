@@ -1,162 +1,73 @@
-<p align="center">
-  <img src="assets/omnia/eye.png" width="112" alt="OMNIA EYE" />
-</p>
-<h1 align="center">OMNIA LAYA</h1>
-<p align="center"><strong>Machine-native decisions. Evidence at every step.</strong></p>
-<p align="center">
-  A local decision layer for systems that need to know what happened, why it was accepted, and which evidence supports it.
-</p>
-<p align="center">
-  <a href="#quickstart">Quickstart</a> ·
-  <a href="#the-decision-path">Architecture</a> ·
-  <a href="#engineering">Engineering</a> ·
-  <a href="#research">Research</a> ·
-  <a href="docs/omnia/OPERATIONS.md">Operations</a>
-</p>
-<p align="center">
-  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache_2.0-63d6bc?style=flat-square" /></a>
-  <a href=".github/workflows/omnia.yml"><img alt="OMNIA integration checks" src="https://github.com/Omniaeye/omnia-laya/actions/workflows/omnia.yml/badge.svg" /></a>
-</p>
+# Typed Decision Layer
 
----
+A local decision integration layer with typed answers, versioned policies, evidence and persistent decision records.
 
-OMNIA Laya turns typed model answers into durable, inspectable decision records.
-It connects a pinned local checkpoint to the evidence, criteria and policy that
-produced each result. Replay a request. Inspect its probabilities. Change a policy.
-Keep the full decision lineage.
+![review](https://img.shields.io/badge/review-private-374151) ![primary](https://img.shields.io/badge/primary-Python-2563EB) [![LinkedIn](https://img.shields.io/badge/LinkedIn-Douglas%20Silva-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/douglas-silva-data-analyst/)
 
-This is **OMNIA EYE's independent integration fork of [Laya](https://github.com/NandhaKishorM/laya)**.
-The upstream engine supplies local `choice`, `score` and `noul` inference. OMNIA adds
-complete-input checks, strict answer validation, probability gates, a persistent
-ledger and evaluation tools. Original upstream code and attribution are preserved.
+[Overview](#overview) · [Architecture](#architecture) · [Setup](#setup) · [Validation](#validation) · [Roadmap](#roadmap) · [Review notes](docs/REVIEW.md)
 
-## The decision path
+## Overview
 
-```mermaid
-flowchart LR
-  A[Evidence packet] --> B[Bounded contract]
-  B --> C{Recorded decision?}
-  C -->|Yes| D[Replay record]
-  C -->|No| E[Pinned local Laya]
-  E --> F[Validate typed answer]
-  F --> G{Probability policy}
-  G --> H[Accepted]
-  G --> I[Review]
-  H --> J[Durable evidence record]
-  I --> J
+- Typed answer contracts connect model output to policies and evidence.
+- Revision pinning and local runtime configuration make inference inputs inspectable.
+- Integration code extends the upstream Laya project while retaining its attribution.
+
+**Technology:** Python · PyTorch · Transformers · safetensors · SQLite · TypeScript client · optional FastAPI/ONNX integrations
+
+**Persistence and data:** SQLite ledger and revision metadata support decision lineage. Model checkpoints are external assets and are not bundled.
+
+## Architecture
+
+```text
+Pinned checkpoint and typed request → local inference → output/policy validation → durable decision record
 ```
 
-| Layer | What it provides |
+| Location | Review focus |
 | --- | --- |
-| **Evidence** | Source identifiers, ordered criteria and a fingerprint of the exact request |
-| **Inference** | An explicit checkpoint, immutable revision and local device configuration |
-| **Validation** | Matching answer IDs, legal classes, finite probabilities and consistent scores |
-| **Policy** | A configurable acceptance boundary with the exact questions requiring review |
-| **Memory** | Durable replay across restarts, source-version fingerprints and recorded failure types |
-| **Evaluation** | Accuracy, calibration, Brier score, coverage and error among accepted decisions |
+| [`laya`](laya) | Source/configuration inspected for scope and structure |
+| [`laya-ts`](laya-ts) | Source/configuration inspected for scope and structure |
+| [`OMNIA_NOTICES.md`](OMNIA_NOTICES.md) | Source/configuration inspected for scope and structure |
+| [`UPSTREAM_README.md`](UPSTREAM_README.md) | Source/configuration inspected for scope and structure |
+| [`pyproject.toml`](pyproject.toml) | Source/configuration inspected for scope and structure |
 
-## Quickstart
+Internal package and module names are retained where changing them would affect imports or compatibility. This descriptive repository name does not imply a completed package/API migration.
 
-Clone the fork and install it into a Python 3.10+ environment with the appropriate
-[PyTorch build](https://pytorch.org/get-started/locally/) for your device:
+## Setup
 
-```bash
-git clone https://github.com/Omniaeye/omnia-laya.git
-cd omnia-laya
-python -m pip install -e .
-```
+Read pyproject.toml optional extras and CONTRIBUTING.md before installation. Install only the backend needed for your environment; GPU and ONNX paths require separate validation.
 
-Select an immutable checkpoint revision. The following revision was used for the
-[recorded local verification](docs/omnia/VALIDATION.md):
+Start from an isolated environment. Use `.env.example` when present and inspect the configuration loader: an example file is not necessarily loaded automatically. Runtime databases, real account sessions and private credentials are not bundled. Live integration prerequisites are separate from local tests.
 
-```bash
-export OMNIA_LAYA_REVISION=55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851
-python -m examples.omnia --input examples/omnia/requests.jsonl
-```
+## Validation
 
-PowerShell:
+Static parsing checked 134 Python files and 37 strict JSON files. Python syntax errors: 0; JSON errors: 0. No functional test/build result is claimed for this preparation. Additional gates: ruff — passed: E9,F63,F7,F82,F401,F811; compileall — passed: laya and tests; model_runtime — not executed.
 
-```powershell
-$env:OMNIA_LAYA_REVISION = '55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851'
-python -m examples.omnia --input examples/omnia/requests.jsonl
-```
+Available test scripts are inventoried in [the review notes](docs/REVIEW.md). Choose offline checks before operating any integration.
 
-The first call loads the selected checkpoint. Repeat the command to retrieve the
-same decisions from the local ledger. [Configuration](examples/omnia/.env.example)
-and [operations](docs/omnia/OPERATIONS.md) cover model selection, context budgets,
-private storage and offline operation.
+These results apply to the selected checks on the preparation copy. They do not establish deployment readiness, full coverage, live provider availability or measured performance. CI definitions, when present under `docs/ci-templates/`, are inactive review templates; no remote CI badge is claimed.
 
-## One record, complete lineage
+## Limits and current status
 
-Each response carries:
+This is an integration fork of upstream Laya, not an independently authored inference engine. Torch, optional runtimes and checkpoints were not installed or executed in this review. Historical benchmark files are not fresh measurements.
 
-- `decision_id`, `source_id` and evidence references.
-- Input and question fingerprints, including order-sensitive cache identity.
-- Checkpoint revision, runtime source fingerprint and inference settings.
-- Typed answers and their distributions.
-- `accepted` or `review`, with question-level review reasons.
-- Processing time, original decision timestamp and replay status.
+This private snapshot is for code and portfolio review. Generated runtime material and unreviewed binary assets may be excluded. [Review notes](docs/REVIEW.md) record preparation scope, findings and outstanding validation.
 
-Raw input text is kept out of the ledger. Failed processing produces an explicit
-failure record and a retryable request. Content is never silently shortened to
-fit a checkpoint: instruction, option and state budgets are checked before inference.
+## Roadmap
 
-**Probability and confidence stay separate.** The policy uses answer probability;
-upstream entropy-based confidence remains available as its own field. Thresholds
-are chosen with reviewed task data, then versioned with every decision.
+- [ ] Run the repository's required Ruff and compile gates.
+- [ ] Test the integration layer with controlled answers before loading a model.
+- [ ] Validate the TypeScript client and chosen optional runtime separately.
 
-## Built for the OMNIA ecosystem
+## History and attribution
 
-The same decision envelope supports different application-owned question sets:
-news relevance, evidence matching, market observation review and data-quality routing.
-The fork supplies the shared decision infrastructure; applications own their
-publication rules, risk limits and authorized actions.
+392 existing commits were retained after path/content filtering. Original authors and author/committer dates were retained; commit hashes may change. Upstream commits are not presented as new work by the maintainer.
 
-Explore the evidence field in
-[OMNIA's multichain data stream](https://github.com/Omniaeye/data-stream-multichain).
+Existing license and attribution files are retained: [LICENSE](LICENSE). Review their scope and third-party notices before redistribution.
 
-## Engineering
+## Maintainer and feedback
 
-| Component | Location |
-| --- | --- |
-| Typed contracts and durable ledger | [`examples/omnia/ledger.py`](examples/omnia/ledger.py) |
-| Pinned inference and complete-input checks | [`examples/omnia/runtime.py`](examples/omnia/runtime.py) |
-| Bounded JSONL processor | [`examples/omnia/__main__.py`](examples/omnia/__main__.py) |
-| Calibration and coverage metrics | [`examples/omnia/evaluate.py`](examples/omnia/evaluate.py) |
-| Automated checks | [`tests/test_omnia_ledger.py`](tests/test_omnia_ledger.py), [`tests/test_omnia_runtime.py`](tests/test_omnia_runtime.py), [`tests/test_omnia_evaluation.py`](tests/test_omnia_evaluation.py) |
-| Architecture and recovery | [`docs/omnia/ARCHITECTURE.md`](docs/omnia/ARCHITECTURE.md) |
-| Verification receipt | [`docs/omnia/VALIDATION.md`](docs/omnia/VALIDATION.md) |
+Douglas de Oliveira Silva · [GitHub](https://github.com/qquante) · [LinkedIn](https://www.linkedin.com/in/douglas-silva-data-analyst/)
 
-```bash
-python -m unittest discover -s tests -p 'test_omnia*.py' -v
-```
+For this private review, report reproducible issues with a minimal fixture and the exact check output. Keep account data, credentials and generated sensitive reports out of issues and commits. Existing contribution guidelines apply where present.
 
-The integration uses the Python standard library plus Laya's existing dependencies.
-It keeps the upstream public API intact and requires no hosted inference service.
-The SQLite ledger serializes one decision at a time per database. Its explicit
-ownership boundary makes replay and recovery inspectable.
-
-## Research
-
-The design connects typed decisions with evidence-aware software control:
-
-- **[Laya](https://github.com/NandhaKishorM/laya)** — the local decision runtime.
-- **[TypeSafe Jev](https://docs.typesafe.ai/)** — typed decision interfaces and workflow control.
-- **[Jev for Scientific Decisions](https://arxiv.org/abs/2609.24965v2)** — inspect intermediate choices and their downstream consequences.
-- **[ModernBERT](https://arxiv.org/abs/2412.13663)** — efficient encoder foundations.
-- **[On Calibration of Modern Neural Networks](https://arxiv.org/abs/1706.04599)** — evaluate how probabilities relate to correctness.
-- **[SelectiveNet](https://arxiv.org/abs/1901.09192)** — reason explicitly about coverage and accepted-decision error.
-- **[Datasheets for Datasets](https://arxiv.org/abs/1803.09010)** — document data origin, labels and intended use.
-
-[Research notes](docs/omnia/RESEARCH.md) map each reference to its engineering
-application. References provide design context; performance results remain attached
-to the implementation and workload that produced them.
-
-## Attribution and contribution
-
-OMNIA additions and inherited Laya source are distributed under
-[Apache-2.0](LICENSE). See [OMNIA notices](OMNIA_NOTICES.md), the preserved
-[upstream README](UPSTREAM_README.md), [contribution guide](CONTRIBUTING.md)
-and [integration history](docs/omnia/HISTORY.md).
-
-**OMNIA EYE · Connected signals. Traceable decisions.**
+**Topics:** `python`, `pytorch`, `transformers`, `structured-output`, `local-ai`, `sqlite`, `typescript`
