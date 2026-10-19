@@ -1,0 +1,41 @@
+{
+  "schema": "omnia.verification.v1",
+  "verified_at": "2026-09-25T21:14:13.296038+00:00",
+  "scope": "Local integration verification; two illustrative support requests, not domain accuracy certification.",
+  "upstream_commit": "4066d5d5fbf08b66c6757ddeedbd797bd7655bc0",
+  "environment": {
+    "python": "3.11.15",
+    "os": "Windows",
+    "machine": "AMD64",
+    "device": "cpu",
+    "threads": 4
+  },
+  "checks": {
+    "omnia_unit_tests": 28,
+    "upstream_hooks_api": 131,
+    "upstream_router": 546,
+    "upstream_criteria": 139,
+    "upstream_hooks": 162,
+    "lint": "passed",
+    "compile": "passed",
+    "documentation_strict": "passed"
+  },
+  "inference": {
+    "checkpoint_revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+    "model": "english",
+    "requests": 2,
+    "replayed_without_inference": 2,
+    "first_call_ms": 4012.639,
+    "second_call_ms": 168.056,
+    "first_call_includes_model_load": true,
+    "results": [
+      "billing",
+      "technical"
+    ]
+  },
+  "observed_warnings": [
+    "Upstream temperature correction for choice:11+; the three-option smoke requests do not use that bucket. The OMNIA runtime rejects requests using a corrected bucket.",
+    "Upstream hook tests emit unawaited coroutine warnings while passing all 162 checks."
+  ],
+  "deployment": "No product deployment or financial execution performed."
+}
