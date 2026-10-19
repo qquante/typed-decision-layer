@@ -46,4 +46,8 @@ Before any public release, complete content/asset attribution, dependency and se
 
 ## Additional static diagnostics
 
-Ruff fatal Python diagnostics: **2**. These are unresolved findings; they do not negate a narrower passing test suite but require review before release. See [structured diagnostics](STATIC_REVIEW.json).
+Ruff fatal Python diagnostics: **0**. No finding was reported by this selected rule set; this is not a full code audit. See [structured diagnostics](STATIC_REVIEW.json).
+
+## Local security correction — 2026-10-19
+
+The initial credential classification was incomplete. The independent scan and local remediation supersede any earlier suggestion that all release blockers were resolved. See [current security review](SECURITY_REVIEW.md). No remote update was made.
