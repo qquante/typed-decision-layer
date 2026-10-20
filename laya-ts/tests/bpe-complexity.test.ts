@@ -1,4 +1,3 @@
-// laya-ts/tests/bpe-complexity.test.ts
 //
 // Regression: merging one word must stay near-linear in that word's length.
 //

@@ -60,9 +60,7 @@ import laya.serve as _laya_serve
 MAX_QUESTIONS = getattr(_laya_serve, "MAX_QUESTIONS", 64)
 MAX_STATE_CHARS = getattr(_laya_serve, "MAX_STATE_CHARS", 50_000)
 
-# --------------------------------------------------------------------------- #
 # Request / response models
-# --------------------------------------------------------------------------- #
 
 
 MODELS = tuple(getattr(laya, "DEFAULT_MODELS", {}) or ("english", "multilingual", "typed-decisions"))
@@ -146,9 +144,7 @@ class BatchRequest(BaseModel):
     _v_model = field_validator("model")(classmethod(lambda cls, v: _check_model(v)))
 
 
-# --------------------------------------------------------------------------- #
 # App
-# --------------------------------------------------------------------------- #
 
 ROUTER: Optional[Router] = None
 _CFG: Dict[str, Any] = {
@@ -295,9 +291,7 @@ def predict_batch(req: BatchRequest) -> Dict[str, Any]:
     return {"count": len(results), "results": results}
 
 
-# --------------------------------------------------------------------------- #
 # GUI: a request playground on `/`; POST /gui renders the same answers server-side
-# --------------------------------------------------------------------------- #
 
 _LIGHT = (
     "--bg:#ffffff; --chrome:#f5f6f8; --well:#f2f4f6; --card:#ffffff; --sunk:#e9edf1; --hover:#e8ecf0;"
@@ -979,12 +973,10 @@ _EXAMPLE_QUESTIONS = json.dumps(
     indent=2,
 )
 
-# --------------------------------------------------------------------------- #
 # Built-in workflow presets (laya.presets) -- one-click starting points in the
 # builder. Questions come straight from the real preset functions so this stays
 # correct if laya.presets changes; only the illustrative `state` sample and the
 # field name each preset's instructions reference are specific to this demo.
-# --------------------------------------------------------------------------- #
 
 _PRESET_BUILDERS: Dict[str, tuple] = {
     "triage": (
@@ -3396,7 +3388,6 @@ async def _not_found(request, exc):
     )
 
 
-# --------------------------------------------------------------------------- #
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Laya routing API server")

@@ -10,9 +10,7 @@ from laya import Router
 from laya.integrations.langchain import LayaRouter, LayaGuardrail, LayaTriage, LayaGuardrailError
 
 
-# =====================================================================
 # 1. Zero-Latency LangGraph Conditional Edge Router
-# =====================================================================
 # Evaluates incoming user state in ~33 ms without token generation.
 # If confidence falls below 0.80, safely falls back to "human_agent".
 
@@ -38,9 +36,7 @@ if router_node.last_decision:
     print(f"Confidence: {ans['confidence']} | Probabilities: {ans['probabilities']}")
 
 
-# =====================================================================
 # 2. Real-Time Prompt Guardrails (<40 ms)
-# =====================================================================
 # Screens prompts for jailbreaks, prompt injections, and harm severity
 # before any expensive LLM call is made.
 
@@ -65,9 +61,7 @@ except LayaGuardrailError as e:
     print(f"Result: Blocked by LayaGuardrail! Policy violations: {e.violations}")
 
 
-# =====================================================================
 # 3. Customer Support Triage Node
-# =====================================================================
 # Automatically extracts intent, urgency, frustration, and churn risk in one pass.
 
 triage = LayaTriage(state_key="message")
@@ -81,9 +75,7 @@ print(f"Frustration Score (0-3): {enriched_state['triage']['frustration_score']}
 print(f"Churn Risk: {enriched_state['triage']['churn_risk']}")
 
 
-# =====================================================================
 # 4. Remote HTTP Server Mode (No Local PyTorch / GPU Required)
-# =====================================================================
 # You can connect to your own self-hosted `laya-serve` by providing `base_url`:
 #
 # remote_router = LayaRouter(
@@ -93,9 +85,7 @@ print(f"Churn Risk: {enriched_state['triage']['churn_risk']}")
 # )
 
 
-# =====================================================================
 # 5. Compiled LangGraph StateGraph Workflow
-# =====================================================================
 try:
     from langgraph.graph import StateGraph, END
 
