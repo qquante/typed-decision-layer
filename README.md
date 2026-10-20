@@ -1,80 +1,43 @@
 # Typed Decision Layer
 
-**Local typed decisions, versioned policies and evidence-linked integration records.**
-
 ![Language: Python](https://img.shields.io/badge/Language-Python-3776AB?style=flat-square&logo=python) ![Engine: Local Laya](https://img.shields.io/badge/Engine-Local%20Laya-555555?style=flat-square) [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-555555?style=flat-square)](LICENSE)
 
-[Overview](#overview) · [Quickstart](#quickstart) · [Example](#example) · [Validation](#validation) · [Documentation](#documentation)
+A local decision integration layer around the upstream **Laya** engine, adding explicit checkpoint configuration, complete-input checks and persistent decision records.
 
-## Overview
+This repository is a fork of [NandhaKishorM/laya](https://github.com/NandhaKishorM/laya). The inherited engine, TypeScript implementation and research material are not presented as original work in this fork. Original integration additions are identified in [OMNIA_NOTICES.md](OMNIA_NOTICES.md); the upstream landing document is retained in [UPSTREAM_README.md](UPSTREAM_README.md).
 
-A local decision integration layer with typed answers, versioned policies, evidence and persistent decision records.
+## What the integration adds
 
-**Stack:** Python · PyTorch · Transformers · safetensors · SQLite · TypeScript client · optional FastAPI/ONNX integrations
+[examples/omnia/runtime.py](examples/omnia/runtime.py) requires an immutable 40-character checkpoint revision and validates model/device/thread/context limits. Importing the integration does not immediately load model weights.
 
-## Upstream engine and integration additions
+Before inference, complete-input checks reject state, instruction or option content that would exceed the configured token budget. Calibration checks reject active temperature buckets that require review. Runtime and integration fingerprints are retained with configuration/dependency metadata for inspection.
 
-| Component | Behavior |
-| --- | --- |
-| Upstream | The Laya engine and original notices are retained from its upstream project. |
-| Integration | Typed answers, policy/evidence handling and ledger additions connect decisions to application state. |
-| Runtime | Checkpoint revision and optional backend configuration define the local inference environment. |
-
-## Processing path
+[examples/omnia/ledger.py](examples/omnia/ledger.py) supplies durable decision records. These additions are separate from the upstream routing/inference implementation.
 
 ```mermaid
-flowchart LR
-  N0["Pinned checkpoint and typed request"]
-  N1["local inference"]
-  N2["output/policy validation"]
-  N3["durable decision record"]
-N0 --> N1 --> N2 --> N3
+flowchart TD
+  Config[Pinned checkpoint and explicit settings] --> Budget[Complete-input and calibration checks]
+  Input[Typed decision input] --> Budget
+  Budget --> Engine[Upstream local Laya engine]
+  Engine --> Answer[Typed answer and validation]
+  Answer --> Ledger[(Persistent decision record)]
+  Config --> Fingerprint[Runtime/integration manifest]
+  Fingerprint --> Ledger
 ```
 
-## Quickstart
+## Start with integration documentation
+
+Read [docs/omnia](docs/omnia), the [integration examples](examples/omnia) and `tests/test_omnia*` before changing the inherited engine. The `Settings` model in [runtime.py](examples/omnia/runtime.py) defines the `OMNIA_LAYA_*` environment inputs; there is no root `.env.example` in this snapshot. PyTorch, Transformers, safetensors and optional serving/ONNX paths have different runtime requirements; model weights are distributed separately by their publishers.
+
+The required source gates are:
 
 ```console
-python -m venv .venv
-# Activate .venv, then:
-python -m pip install -e .
-python -m compileall -q laya tests
+ruff check laya/ --select=E9,F63,F7,F82,F401,F811 --line-length=120
+python -m compileall -q laya/ tests/
 ```
 
-The commands above install prerequisites or run the specified offline checks. Live collection, cloud operations, messaging and trading are separate operational steps when present.
+These gates passed in the recorded local review. They check lint/syntax, not inference quality, GPU performance or model parity. Checkpoint-backed tests require the selected weights/hardware. Preserve upstream Apache-2.0 notices and the model publisher's separate license when reusing the integration.
 
-## Example
+**Technology:** Python · PyTorch · Transformers · safetensors · SQLite · TypeScript client · optional FastAPI/ONNX integrations
 
-**Inspect the workflow**
-
-Start with the [attribution notice](OMNIA_NOTICES.md), then inspect the additions in `examples/omnia/`, `tests/test_omnia*` and `docs/omnia/`. A pinned checkpoint, typed request, policy validation and persistent decision record form the intended integration boundary. Example code does not bundle model weights.
-
-## Configuration and storage
-
-The package declares optional backend/integration extras in [pyproject.toml](pyproject.toml). Select only the backend needed for your machine. GPU, ONNX and model-backed paths have separate prerequisites; the TypeScript client is in `laya-ts/`.
-
-## Repository guide
-
-| Location | Responsibility |
-| --- | --- |
-| [laya](laya) | Inherited engine and extensions |
-| [examples/omnia](examples/omnia) | Integration examples |
-| [docs/omnia](docs/omnia) | Integration documentation |
-| [laya-ts](laya-ts) | TypeScript client |
-
-## Validation
-
-The quickstart lists the declared checks. No passing CI or coverage claim is implied by the technology badges.
-
-## Scope and operational boundaries
-
-This is an integration fork, not independently authored inference-engine code. Preserve upstream source, history and attribution. Historical benchmarks are not new measurements; checkpoint execution and optional backends need separate validation.
-
-## Documentation
-
-- [Fork attribution](OMNIA_NOTICES.md)
-- [Development and validation](CONTRIBUTING.md)
-- [Preserved upstream guide](UPSTREAM_README.md)
-
-## License and attribution
-
-See [LICENSE](LICENSE), [OMNIA_NOTICES.md](OMNIA_NOTICES.md).
+Source license: [Apache-2.0](LICENSE). Existing upstream and third-party notices are retained.
